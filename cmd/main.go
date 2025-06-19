@@ -38,7 +38,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	redhatv1alpha1 "github.com/caevans/podmortem/api/v1alpha1"
+	podmortemv1alpha1 "github.com/caevans/podmortem/api/v1alpha1"
 	"github.com/caevans/podmortem/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -51,7 +51,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(redhatv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(podmortemv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

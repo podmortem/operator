@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	redhatv1alpha1 "github.com/caevans/podmortem/api/v1alpha1"
+	podmortemv1alpha1 "github.com/caevans/podmortem/api/v1alpha1"
 )
 
 var _ = Describe("PodmortemConfig Controller", func() {
@@ -40,13 +40,13 @@ var _ = Describe("PodmortemConfig Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		podmortemconfig := &redhatv1alpha1.PodmortemConfig{}
+		podmortemconfig := &podmortemv1alpha1.PodmortemConfig{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind PodmortemConfig")
 			err := k8sClient.Get(ctx, typeNamespacedName, podmortemconfig)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &redhatv1alpha1.PodmortemConfig{
+				resource := &podmortemv1alpha1.PodmortemConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,7 +59,7 @@ var _ = Describe("PodmortemConfig Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &redhatv1alpha1.PodmortemConfig{}
+			resource := &podmortemv1alpha1.PodmortemConfig{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

@@ -19,6 +19,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/json" // Added for JSON marshalling
 	"fmt"
 	"io"
 
@@ -35,7 +36,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	redhatv1alpha1 "github.com/caevans/podmortem/api/v1alpha1"
+	podmortemv1alpha1 "github.com/caevans/podmortem/api/v1alpha1"
 )
 
 // PodmortemConfigReconciler reconciles a PodmortemConfig object
@@ -45,11 +46,20 @@ type PodmortemConfigReconciler struct {
 	Clientset kubernetes.Interface
 }
 
-// +kubebuilder:rbac:groups=redhat.redhat.com,resources=podmortemconfigs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=redhat.redhat.com,resources=podmortemconfigs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=redhat.redhat.com,resources=podmortemconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=pods/log,verbs=get
+// PodFailureData defines the structure for the collected pod failure information.
+// This will be marshalled into JSON.
+type PodFailureData struct {
+	Pod    *corev1.Pod    `json:"pod"`
+	Logs   string         `json:"logs"`
+	Events []corev1.Event `json:"events"`
+}
+
+//+kubebuilder:rbac:groups=podmortem.redhat.com,resources=podmortemconfigs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=podmortem.redhat.com,resources=podmortemconfigs/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=podmortem.redhat.com,resources=podmortemconfigs/finalizers,verbs=update
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=pods/log,verbs=get
+//+kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -59,7 +69,7 @@ type PodmortemConfigReconciler struct {
 // the user.
 //
 // For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.18.0/pkg/reconcile
 func (r *PodmortemConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -76,7 +86,7 @@ func (r *PodmortemConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	configs := &redhatv1alpha1.PodmortemConfigList{}
+	configs := &podmortemv1alpha1.PodmortemConfigList{}
 	if err := r.List(ctx, configs); err != nil {
 		log.Error(err, "unable to list PodmortemConfigs")
 		return ctrl.Result{}, err
@@ -94,13 +104,41 @@ func (r *PodmortemConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				if containerStatus.State.Terminated != nil && containerStatus.State.Terminated.ExitCode != 0 {
 					log.Info("Pod has a container with an ungraceful exit", "pod", pod.Name, "container", containerStatus.Name, "exitCode", containerStatus.State.Terminated.ExitCode)
 
-					// Get logs
+					// --- START: MODIFIED SECTION ---
+
+					// 1. Get Logs
 					podLogs, err := r.getPodLogs(ctx, pod, containerStatus.Name)
 					if err != nil {
 						log.Error(err, "failed to get pod logs")
+						// We can still proceed without logs
+					}
+
+					// 2. Get Events for the Pod
+					eventList := &corev1.EventList{}
+					err = r.List(ctx, eventList, client.InNamespace(pod.Namespace), client.MatchingFields{"involvedObject.name": pod.Name})
+					if err != nil {
+						log.Error(err, "failed to get events for pod")
+						// We can still proceed without events
+					}
+
+					// 3. Assemble the failure data
+					failureData := PodFailureData{
+						Pod:    pod,
+						Logs:   podLogs,
+						Events: eventList.Items,
+					}
+
+					// 4. Marshal data to JSON
+					jsonData, err := json.MarshalIndent(failureData, "", "  ")
+					if err != nil {
+						log.Error(err, "failed to marshal failure data to JSON")
 						continue
 					}
-					log.Info("Container logs", "pod", pod.Name, "container", containerStatus.Name, "logs", podLogs)
+
+					// 5. Print JSON to the log
+					log.Info("Collected pod failure data", "data", string(jsonData))
+
+					// --- END: MODIFIED SECTION ---
 				}
 			}
 		}
@@ -130,8 +168,16 @@ func (r *PodmortemConfigReconciler) getPodLogs(ctx context.Context, pod *corev1.
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PodmortemConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Add an index for the .spec.involvedObject.name field of Events, so we can query them efficiently.
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Event{}, "involvedObject.name", func(rawObj client.Object) []string {
+		event := rawObj.(*corev1.Event)
+		return []string{event.InvolvedObject.Name}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&redhatv1alpha1.PodmortemConfig{}).
+		For(&podmortemv1alpha1.PodmortemConfig{}).
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.findConfigsForPod),
@@ -146,7 +192,19 @@ func (r *PodmortemConfigReconciler) findConfigsForPod(ctx context.Context, pod c
 		return nil
 	}
 
-	configs := &redhatv1alpha1.PodmortemConfigList{}
+	// We only care about pods that have failed
+	isFailed := false
+	for _, status := range podObj.Status.ContainerStatuses {
+		if status.State.Terminated != nil && status.State.Terminated.ExitCode != 0 {
+			isFailed = true
+			break
+		}
+	}
+	if !isFailed && podObj.Status.Phase != corev1.PodFailed {
+		return nil
+	}
+
+	configs := &podmortemv1alpha1.PodmortemConfigList{}
 	if err := r.List(ctx, configs); err != nil {
 		return nil
 	}

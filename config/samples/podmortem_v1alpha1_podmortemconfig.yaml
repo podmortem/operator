@@ -1,4 +1,4 @@
-apiVersion: redhat.redhat.com/v1alpha1
+apiVersion: podmortem.redhat.com/v1alpha1
 kind: PodmortemConfig
 metadata:
   labels:
