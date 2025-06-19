@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: podmortemconfigs.redhat.redhat.com
+  name: podmortemconfigs.podmortem.redhat.com
 spec:
-  group: redhat.redhat.com
+  group: podmortem.redhat.com
   names:
     kind: PodmortemConfig
     listKind: PodmortemConfigList

@@ -7,6 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - events
   - pods
   verbs:
   - get
@@ -19,7 +20,7 @@ rules:
   verbs:
   - get
 - apiGroups:
-  - redhat.redhat.com
+  - podmortem.redhat.com
   resources:
   - podmortemconfigs
   verbs:
@@ -31,13 +32,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - redhat.redhat.com
+  - podmortem.redhat.com
   resources:
   - podmortemconfigs/finalizers
   verbs:
   - update
 - apiGroups:
-  - redhat.redhat.com
+  - podmortem.redhat.com
   resources:
   - podmortemconfigs/status
   verbs:
