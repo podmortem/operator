@@ -1,0 +1,9 @@
+apiVersion: redhat.redhat.com/v1alpha1
+kind: PodmortemConfig
+metadata:
+  labels:
+    app.kubernetes.io/name: podmortem
+    app.kubernetes.io/managed-by: kustomize
+  name: podmortemconfig-sample
+spec:
+  # TODO(user): Add fields here
