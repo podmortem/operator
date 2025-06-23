@@ -1,0 +1,36 @@
+{
+  "name": "podmortem-operator",
+  "build": {
+    "dockerfile": "./Containerfile.java21"
+  },
+  "shutdownAction": "none",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "mounts": [
+    "type=bind,source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/root/.ssh,consistency=cached",
+    "type=bind,source=${localEnv:HOME}${localEnv:USERPROFILE}/.m2,target=/root/.m2,consistency=cached"
+  ],
+  "updateRemoteUserUID": true,
+  "remoteUser": "root",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "chat.commandCenter.enabled": false,
+        "editor.renderWhitespace": "all",
+        "java.configuration.updateBuildConfiguration": "interactive",
+        "java.project.sourcePaths": [
+            "src/main/java",
+            "src/test/java"
+        ]
+      },
+      "extensions": [
+        "cweijan.vscode-database-client2",
+        "ms-vscode.makefile-tools",
+        "ms-azuretools.vscode-containers",
+        "redhat.java",
+        "redhat.vscode-quarkus",
+        "redhat.vscode-yaml",
+        "redhat.vscode-xml"
+      ]
+    }
+  }
+}

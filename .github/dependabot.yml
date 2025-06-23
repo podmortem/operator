@@ -1,0 +1,45 @@
+version: 2
+registries:
+  maven-github:
+    type: maven-repository
+    url: "https://maven.pkg.github.com"
+    username: ${{github.actor}}
+    password: ${{secrets.GH_PAT}}
+updates:
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    registries:
+      - maven-github
+    groups:
+      maven-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    groups:
+      github-actions-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: ".devcontainer/"
+    schedule:
+      interval: "daily"
+    groups:
+      docker-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "src/main/docker/"
+    schedule:
+      interval: "daily"
+    groups:
+      docker-dependencies:
+        patterns:
+          - "*"

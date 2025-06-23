@@ -1,0 +1,7 @@
+# Ignore build artifacts
+target/
+
+# Ignore IDE and temporary files
+.idea/
+*.iml
+.vscode/
