@@ -1,0 +1,29 @@
+FROM mcr.microsoft.com/devcontainers/java:21
+
+ENV DEBIAN_FRONTEND="noninteractive"
+ENV HOME="/root"
+ENV PATH="/opt/venv/bin:$PATH"
+ENV TESTCONTAINERS_RYUK_DISABLED true
+
+WORKDIR /app
+
+RUN apt update -y \
+    && apt -y install --no-install-recommends \
+        curl \
+        maven \
+        python3-pip \
+        python3-venv \
+        docker.io \
+        graphviz \
+        postgresql-client \
+    && apt clean
+
+RUN mkdir -p /opt/venv && \
+    python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install --upgrade pip && \
+    /opt/venv/bin/pip install pre-commit
+
+RUN curl -Ls https://sh.jbang.dev | bash -s - trust add https://repo1.maven.org/maven2/io/quarkus/quarkus-cli/ && \
+    curl -Ls https://sh.jbang.dev | bash -s - app install --fresh --force quarkus@quarkusio
+
+CMD ["sleep", "infinity"]

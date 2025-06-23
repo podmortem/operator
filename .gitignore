@@ -1,27 +1,45 @@
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-bin/*
-Dockerfile.cross
+#Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+release.properties
+.flattened-pom.xml
 
-# Test binary, built with `go test -c`
-*.test
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
 
-# Output of the go coverage tool, specifically when used with LiteIDE
-*.out
-
-# Go workspace file
-go.work
-
-# Kubernetes Generated files - skip generated files, except for vendored files
-!vendor/**/zz_generated.*
-
-# editor and IDE paraphernalia
+# IntelliJ
 .idea
+*.ipr
+*.iml
+*.iws
+
+# NetBeans
+nb-configuration.xml
+
+# Visual Studio Code
 .vscode
+.factorypath
+
+# OSX
+.DS_Store
+
+# Vim
 *.swp
 *.swo
-*~
+
+# patch
+*.orig
+*.rej
+
+# Local environment
+.env
+
+# Plugin directory
+/.quarkus/cli/plugins/
+# TLS Certificates
+.certs/
