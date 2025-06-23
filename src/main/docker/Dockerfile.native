@@ -1,0 +1,24 @@
+FROM registry.access.redhat.com/quarkus/mandrel-for-jdk-21-rhel8:23.1 AS build
+WORKDIR /home/quarkus
+
+COPY --chown=quarkus:quarkus mvnw .
+COPY --chown=quarkus:quarkus .mvn .mvn
+COPY --chown=quarkus:quarkus pom.xml .
+COPY --chown=quarkus:quarkus src src
+
+USER quarkus
+
+ARG GITHUB_USER
+ARG GITHUB_TOKEN
+ENV GITHUB_USER=$GITHUB_USER
+ENV GITHUB_TOKEN=$GITHUB_TOKEN
+
+RUN ./mvnw --no-transfer-progress -s src/main/resources/settings.xml -U package -Dnative
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal
+
+WORKDIR /work/
+COPY --from=build /home/quarkus/target/*-runner /work/application
+
+EXPOSE 8080
+CMD ["./application", "-Dquarkus.http.host=0.0.0.0"]
