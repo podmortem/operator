@@ -1,2 +1,2 @@
 # operator
-GO repository for the podmortem operator
+Main podmortem operator repository
