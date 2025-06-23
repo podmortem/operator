@@ -16,10 +16,27 @@ public class PodFailureData {
     }
 
     // Getters and setters
-    public Pod getPod() { return pod; }
-    public void setPod(Pod pod) { this.pod = pod; }
-    public String getLogs() { return logs; }
-    public void setLogs(String logs) { this.logs = logs; }
-    public List<Event> getEvents() { return events; }
-    public void setEvents(List<Event> events) { this.events = events; }
+    public Pod getPod() {
+        return pod;
+    }
+
+    public void setPod(Pod pod) {
+        this.pod = pod;
+    }
+
+    public String getLogs() {
+        return logs;
+    }
+
+    public void setLogs(String logs) {
+        this.logs = logs;
+    }
+
+    public List<Event> getEvents() {
+        return events;
+    }
+
+    public void setEvents(List<Event> events) {
+        this.events = events;
+    }
 }

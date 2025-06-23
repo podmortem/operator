@@ -7,5 +7,5 @@ import io.fabric8.kubernetes.model.annotation.Version;
 
 @Group("podmortem.redhat.com")
 @Version("v1alpha1")
-public class PodmortemConfig extends CustomResource<PodmortemConfigSpec, PodmortemConfigStatus> implements Namespaced {
-}
+public class PodmortemConfig extends CustomResource<PodmortemConfigSpec, PodmortemConfigStatus>
+        implements Namespaced {}

@@ -12,7 +12,6 @@ repos:
     hooks:
     -   id: spotless
         name: spotless
-        entry: mvn spotless:apply
+        entry: bash -c 'mvn spotless:apply'
         language: system
-        files: \.java$
-        stages: [pre-commit]
+        files: \.(java|xml|json|md)$
