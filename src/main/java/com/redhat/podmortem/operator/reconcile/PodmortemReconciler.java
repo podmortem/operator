@@ -1,10 +1,10 @@
-package com.redhat.podmortem.reconcile.config;
+package com.redhat.podmortem.operator.reconcile;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.redhat.podmortem.model.cr.config.PodFailureData;
-import com.redhat.podmortem.model.cr.config.PodmortemConfig;
+import com.redhat.podmortem.common.model.kube.podmortem.PodFailureData;
+import com.redhat.podmortem.common.model.kube.podmortem.Podmortem;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.events.v1.Event;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -17,21 +17,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @ControllerConfiguration
-public class PodmortemConfigReconciler implements Reconciler<PodmortemConfig> {
+public class PodmortemReconciler implements Reconciler<Podmortem> {
 
-    private static final Logger log = LoggerFactory.getLogger(PodmortemConfigReconciler.class);
+    private static final Logger log = LoggerFactory.getLogger(PodmortemReconciler.class);
     private final KubernetesClient client;
     private final ObjectMapper objectMapper;
 
-    public PodmortemConfigReconciler(KubernetesClient client) {
+    public PodmortemReconciler(KubernetesClient client) {
         this.client = client;
         this.objectMapper = new ObjectMapper();
         this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
     }
 
     @Override
-    public UpdateControl<PodmortemConfig> reconcile(
-            PodmortemConfig resource, Context<PodmortemConfig> context) {
+    public UpdateControl<Podmortem> reconcile(Podmortem resource, Context<Podmortem> context) {
         log.info("Reconciling PodmortemConfig: {}", resource.getMetadata().getName());
 
         List<Pod> pods =
