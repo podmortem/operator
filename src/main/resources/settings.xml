@@ -4,7 +4,12 @@
                       https://maven.apache.org/xsd/settings-1.0.0.xsd">
   <servers>
     <server>
-      <id>github</id>
+      <id>github-common</id>
+      <username>${env.GITHUB_USER}</username>
+      <password>${env.GITHUB_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-ai-provider</id>
       <username>${env.GITHUB_USER}</username>
       <password>${env.GITHUB_TOKEN}</password>
     </server>
