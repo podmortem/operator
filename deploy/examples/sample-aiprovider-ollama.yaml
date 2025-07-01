@@ -1,0 +1,18 @@
+---
+apiVersion: podmortem.redhat.com/v1alpha1
+kind: AIProvider
+metadata:
+  name: ollama-local
+  namespace: podmortem-system
+spec:
+  providerId: "ollama"
+  apiUrl: "http://ollama-service.ai-models.svc.cluster.local:11434"
+  modelId: "mistral:7b"
+  timeoutSeconds: 60
+  maxRetries: 2
+  cachingEnabled: true
+  temperature: 0.3
+  maxTokens: 500
+  additionalConfig:
+    stream: "false"
+    num_predict: "500"

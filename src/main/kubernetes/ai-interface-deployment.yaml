@@ -1,0 +1,23 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podmortem-ai-interface-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: podmortem-ai-interface-service
+  template:
+    metadata:
+      labels:
+        app: podmortem-ai-interface-service
+    spec:
+      containers:
+      - name: ai-interface
+        image: ghcr.io/podmortem/podmortem-ai-interface:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: QUARKUS_LOG_LEVEL
+          value: "INFO"

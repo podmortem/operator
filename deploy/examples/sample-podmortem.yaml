@@ -1,0 +1,14 @@
+---
+apiVersion: podmortem.redhat.com/v1alpha1
+kind: Podmortem
+metadata:
+  name: monitor-my-apps
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: "my-application"
+  aiProviderRef:
+    name: "ollama-local"
+    namespace: "podmortem-system"
+  aiAnalysisEnabled: true
