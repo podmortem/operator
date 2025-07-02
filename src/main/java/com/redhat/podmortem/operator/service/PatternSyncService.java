@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory;
 public class PatternSyncService {
 
     private static final Logger log = LoggerFactory.getLogger(PatternSyncService.class);
-    private static final String PATTERN_CACHE_DIR = "/tmp/pattern-cache";
+    private static final String PATTERN_CACHE_DIR = "/shared/patterns"; // Shared with log-parser
 
     public void syncRepository(String libraryName, PatternRepository repo, String credentials) {
         try {
@@ -62,15 +62,7 @@ public class PatternSyncService {
         try {
             Path libraryPath = Paths.get(PATTERN_CACHE_DIR, libraryName);
             if (Files.exists(libraryPath)) {
-                // scan for pattern library directories and files
-                try (Stream<Path> paths = Files.walk(libraryPath, 2)) {
-                    paths.filter(Files::isDirectory)
-                            .filter(path -> !path.equals(libraryPath))
-                            .map(path -> path.getFileName().toString())
-                            .forEach(libraries::add);
-                }
-
-                // also scan for YAML files that might be libraries
+                // scan for YAML files that are pattern libraries
                 try (Stream<Path> yamlFiles = Files.walk(libraryPath)) {
                     yamlFiles
                             .filter(Files::isRegularFile)
@@ -105,19 +97,18 @@ public class PatternSyncService {
                             .setDirectory(repoPath.toFile())
                             .setBranch(branch);
 
-            // add credentials if given
+            // add credentials if provided (HTTPS only, no SSH)
             if (credentials != null && !credentials.trim().isEmpty()) {
-                // credentials format: "username:token" or just "token"
                 String[] parts = credentials.split(":", 2);
                 if (parts.length == 2) {
                     cloneCommand.setCredentialsProvider(
                             new UsernamePasswordCredentialsProvider(parts[0], parts[1]));
                 } else {
-                    // token-only authentication (use token as password with empty username)
+                    // token-only authentication (GitHub personal access token)
                     cloneCommand.setCredentialsProvider(
                             new UsernamePasswordCredentialsProvider("", credentials));
                 }
-                log.debug("Using credentials for repository cloning");
+                log.debug("Using HTTPS credentials for repository cloning");
             }
 
             try (Git git = cloneCommand.call()) {
@@ -140,7 +131,7 @@ public class PatternSyncService {
             try (Git git = Git.open(repoPath.toFile())) {
                 var pullCommand = git.pull();
 
-                // add credentials if given
+                // add credentials if provided
                 if (credentials != null && !credentials.trim().isEmpty()) {
                     String[] parts = credentials.split(":", 2);
                     if (parts.length == 2) {
@@ -150,7 +141,7 @@ public class PatternSyncService {
                         pullCommand.setCredentialsProvider(
                                 new UsernamePasswordCredentialsProvider("", credentials));
                     }
-                    log.debug("Using credentials for repository pull");
+                    log.debug("Using HTTPS credentials for repository pull");
                 }
 
                 var result = pullCommand.call();
@@ -187,9 +178,10 @@ public class PatternSyncService {
 
                 if (yamlCount == 0) {
                     log.warn("No YAML pattern files found in repository at {}", repoPath);
+                } else {
+                    log.info(
+                            "Found {} YAML pattern files in repository at {}", yamlCount, repoPath);
                 }
-
-                log.info("Found {} YAML pattern files in repository at {}", yamlCount, repoPath);
             }
         } catch (Exception e) {
             log.error(
