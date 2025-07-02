@@ -16,7 +16,7 @@
         <skipITs>true</skipITs>
         <surefire-plugin.version>3.5.3</surefire-plugin.version>
 
-        <podmortem.common.lib.version>1.0-36588fe-SNAPSHOT</podmortem.common.lib.version>
+        <podmortem.common.lib.version>1.0-7182475-SNAPSHOT</podmortem.common.lib.version>
     </properties>
 
     <repositories>
