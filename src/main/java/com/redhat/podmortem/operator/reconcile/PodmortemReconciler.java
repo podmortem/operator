@@ -1,4 +1,4 @@
-package com.redhat.podmortem.reconcile.config;
+package com.redhat.podmortem.operator.reconcile;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
