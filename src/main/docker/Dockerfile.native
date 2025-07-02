@@ -1,24 +1,48 @@
 FROM registry.access.redhat.com/quarkus/mandrel-for-jdk-21-rhel8:23.1 AS build
 WORKDIR /home/quarkus
 
-COPY --chown=quarkus:quarkus mvnw .
-COPY --chown=quarkus:quarkus .mvn .mvn
-COPY --chown=quarkus:quarkus pom.xml .
-COPY --chown=quarkus:quarkus src src
-
-USER quarkus
-
 ARG GITHUB_USER
 ARG GITHUB_TOKEN
 ENV GITHUB_USER=$GITHUB_USER
 ENV GITHUB_TOKEN=$GITHUB_TOKEN
 
-RUN ./mvnw --no-transfer-progress -s src/main/resources/settings.xml -U package -Dnative
+COPY --chown=quarkus:quarkus mvnw .
+COPY --chown=quarkus:quarkus .mvn .mvn
+COPY --chown=quarkus:quarkus pom.xml .
+COPY --chown=quarkus:quarkus src/main/resources/settings.xml src/main/resources/settings.xml
+
+USER quarkus
+
+RUN ./mvnw --no-transfer-progress -s src/main/resources/settings.xml \
+    dependency:go-offline dependency:resolve-sources \
+    -DexcludeGroupIds=com.redhat.podmortem
+
+COPY --chown=quarkus:quarkus src src
+
+RUN ./mvnw --no-transfer-progress -s src/main/resources/settings.xml \
+    package -Dnative \
+    -Dquarkus.native.additional-build-args="-J-Xmx8g,-J-XX:+UseG1GC,-J-XX:MaxGCPauseMillis=100,--initialize-at-build-time=org.slf4j.LoggerFactory,--initialize-at-build-time=org.slf4j.impl.StaticLoggerBinder,--initialize-at-build-time=ch.qos.logback,--enable-preview,--strict-image-heap,-H:+ReportExceptionStackTraces,-H:+PrintGCApplicationConcurrentTime,-H:+PrintGCApplicationStoppedTime,-H:+PrintGC,-H:+VerboseGC" \
+    -Dquarkus.native.enable-reports=true \
+    -Dquarkus.native.enable-dashboard-dump=true
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal
 
+RUN microdnf update -y && \
+    microdnf install -y shadow-utils && \
+    groupadd -r appuser && useradd -r -g appuser appuser && \
+    microdnf remove -y shadow-utils && \
+    microdnf clean all
+
 WORKDIR /work/
-COPY --from=build /home/quarkus/target/*-runner /work/application
+COPY --from=build --chown=appuser:appuser /home/quarkus/target/*-runner /work/application
+
+RUN chmod 755 /work/application
+
+USER appuser
 
 EXPOSE 8080
-CMD ["./application", "-Dquarkus.http.host=0.0.0.0"]
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/q/health || exit 1
+
+CMD ["./application", "-Dquarkus.http.host=0.0.0.0", "-Dquarkus.http.port=8080"]

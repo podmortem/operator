@@ -1,7 +1,75 @@
-# Ignore build artifacts
+# Build artifacts and directories
 target/
+.quarkus/
+build/
+dist/
+out/
 
-# Ignore IDE and temporary files
+# IDE files
 .idea/
 *.iml
 .vscode/
+.eclipse/
+.metadata/
+.classpath
+.project
+.settings/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD files
+.github/
+.gitlab-ci.yml
+
+# Documentation and markdown files
+*.md
+docs/
+doc/
+
+# Log files
+*.log
+logs/
+
+# Docker files (except Dockerfile)
+docker-compose.yml
+docker-compose.yaml
+docker-compose.*.yml
+docker-compose.*.yaml
+
+# License and legal files
+LICENSE*
+NOTICE*
+COPYING*
+
+# Examples and samples
+examples/
+samples/
+
+# Kubernetes manifests (not needed for build)
+deploy/
+k8s/
+kubernetes/
+
+# Configuration files
+.env
+.env.local
+.env.*.local
+.editorconfig
+.eslintrc.*
+.prettierrc.*
+.stylelintrc.*
