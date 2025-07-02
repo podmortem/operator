@@ -83,10 +83,11 @@ spec:
         - name: tmp
           mountPath: /tmp
         - name: pattern-cache
-          mountPath: /tmp/pattern-cache
+          mountPath: /shared/patterns
       volumes:
       - name: tmp
         emptyDir: {}
       - name: pattern-cache
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: pattern-cache-pvc
       terminationGracePeriodSeconds: 60

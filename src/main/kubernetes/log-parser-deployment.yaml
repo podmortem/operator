@@ -18,3 +18,11 @@ spec:
         image: ghcr.io/podmortem/podmortem-log-parser:latest
         ports:
         - containerPort: 8080
+        volumeMounts:
+        - name: pattern-cache
+          mountPath: /shared/patterns
+          readOnly: true
+      volumes:
+      - name: pattern-cache
+        persistentVolumeClaim:
+          claimName: pattern-cache-pvc

@@ -8,6 +8,9 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,21 +24,21 @@ public class PatternSyncService {
         try {
             log.info("Syncing repository {} for library {}", repo.getName(), libraryName);
 
-            // Create cache directory structure
+            // create cache directory structure
             Path libraryPath = Paths.get(PATTERN_CACHE_DIR, libraryName);
             Files.createDirectories(libraryPath);
 
             Path repoPath = libraryPath.resolve(repo.getName());
 
             if (Files.exists(repoPath)) {
-                // Pull latest changes
+                // pull latest changes
                 pullRepository(repoPath, repo, credentials);
             } else {
-                // Clone repository
+                // clone repository
                 cloneRepository(repoPath, repo, credentials);
             }
 
-            // Validate patterns in the repository
+            // validate patterns in the repository
             validatePatterns(repoPath);
 
             log.info(
@@ -59,7 +62,7 @@ public class PatternSyncService {
         try {
             Path libraryPath = Paths.get(PATTERN_CACHE_DIR, libraryName);
             if (Files.exists(libraryPath)) {
-                // Scan for pattern library directories and files
+                // scan for pattern library directories and files
                 try (Stream<Path> paths = Files.walk(libraryPath, 2)) {
                     paths.filter(Files::isDirectory)
                             .filter(path -> !path.equals(libraryPath))
@@ -67,7 +70,7 @@ public class PatternSyncService {
                             .forEach(libraries::add);
                 }
 
-                // Also scan for YAML files that might be libraries
+                // also scan for YAML files that might be libraries
                 try (Stream<Path> yamlFiles = Files.walk(libraryPath)) {
                     yamlFiles
                             .filter(Files::isRegularFile)
@@ -94,38 +97,36 @@ public class PatternSyncService {
         try {
             log.info("Cloning repository {} to {}", repo.getUrl(), repoPath);
 
-            // For now, using simple git command execution
-            // In a full implementation, you'd use JGit library
-            ProcessBuilder pb = new ProcessBuilder();
-            pb.directory(repoPath.getParent().toFile());
+            String branch = repo.getBranch() != null ? repo.getBranch() : "main";
 
-            if (credentials != null) {
-                // Handle authentication - this is simplified
-                String authUrl = repo.getUrl().replace("https://", "https://" + credentials + "@");
-                pb.command(
-                        "git",
-                        "clone",
-                        "-b",
-                        repo.getBranch() != null ? repo.getBranch() : "main",
-                        authUrl,
-                        repoPath.getFileName().toString());
-            } else {
-                pb.command(
-                        "git",
-                        "clone",
-                        "-b",
-                        repo.getBranch() != null ? repo.getBranch() : "main",
-                        repo.getUrl(),
-                        repoPath.getFileName().toString());
+            var cloneCommand =
+                    Git.cloneRepository()
+                            .setURI(repo.getUrl())
+                            .setDirectory(repoPath.toFile())
+                            .setBranch(branch);
+
+            // add credentials if given
+            if (credentials != null && !credentials.trim().isEmpty()) {
+                // credentials format: "username:token" or just "token"
+                String[] parts = credentials.split(":", 2);
+                if (parts.length == 2) {
+                    cloneCommand.setCredentialsProvider(
+                            new UsernamePasswordCredentialsProvider(parts[0], parts[1]));
+                } else {
+                    // token-only authentication (use token as password with empty username)
+                    cloneCommand.setCredentialsProvider(
+                            new UsernamePasswordCredentialsProvider("", credentials));
+                }
+                log.debug("Using credentials for repository cloning");
             }
 
-            Process process = pb.start();
-            int exitCode = process.waitFor();
-
-            if (exitCode != 0) {
-                throw new RuntimeException("Git clone failed with exit code: " + exitCode);
+            try (Git git = cloneCommand.call()) {
+                log.info("Successfully cloned repository {} to {}", repo.getUrl(), repoPath);
             }
 
+        } catch (GitAPIException e) {
+            log.error("Failed to clone repository {}: {}", repo.getUrl(), e.getMessage(), e);
+            throw new RuntimeException("Git clone failed: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Failed to clone repository {}: {}", repo.getUrl(), e.getMessage(), e);
             throw new RuntimeException("Git clone failed", e);
@@ -136,18 +137,37 @@ public class PatternSyncService {
         try {
             log.info("Pulling latest changes for repository at {}", repoPath);
 
-            ProcessBuilder pb = new ProcessBuilder();
-            pb.directory(repoPath.toFile());
-            pb.command(
-                    "git", "pull", "origin", repo.getBranch() != null ? repo.getBranch() : "main");
+            try (Git git = Git.open(repoPath.toFile())) {
+                var pullCommand = git.pull();
 
-            Process process = pb.start();
-            int exitCode = process.waitFor();
+                // add credentials if given
+                if (credentials != null && !credentials.trim().isEmpty()) {
+                    String[] parts = credentials.split(":", 2);
+                    if (parts.length == 2) {
+                        pullCommand.setCredentialsProvider(
+                                new UsernamePasswordCredentialsProvider(parts[0], parts[1]));
+                    } else {
+                        pullCommand.setCredentialsProvider(
+                                new UsernamePasswordCredentialsProvider("", credentials));
+                    }
+                    log.debug("Using credentials for repository pull");
+                }
 
-            if (exitCode != 0) {
-                throw new RuntimeException("Git pull failed with exit code: " + exitCode);
+                var result = pullCommand.call();
+
+                if (result.isSuccessful()) {
+                    log.info("Successfully pulled latest changes for repository at {}", repoPath);
+                } else {
+                    log.warn(
+                            "Pull completed with issues for repository at {}: {}",
+                            repoPath,
+                            result.getMergeResult());
+                }
             }
 
+        } catch (GitAPIException e) {
+            log.error("Failed to pull repository at {}: {}", repoPath, e.getMessage(), e);
+            throw new RuntimeException("Git pull failed: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Failed to pull repository at {}: {}", repoPath, e.getMessage(), e);
             throw new RuntimeException("Git pull failed", e);
@@ -156,7 +176,6 @@ public class PatternSyncService {
 
     private void validatePatterns(Path repoPath) {
         try {
-            // Basic validation - check if YAML files are present
             try (Stream<Path> files = Files.walk(repoPath)) {
                 long yamlCount =
                         files.filter(Files::isRegularFile)
