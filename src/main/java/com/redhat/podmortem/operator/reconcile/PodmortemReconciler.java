@@ -9,8 +9,8 @@ import com.redhat.podmortem.common.model.kube.podmortem.Podmortem;
 import com.redhat.podmortem.common.model.kube.podmortem.PodmortemStatus;
 import com.redhat.podmortem.operator.service.AIInterfaceClient;
 import com.redhat.podmortem.operator.service.LogParserClient;
+import io.fabric8.kubernetes.api.model.Event;
 import io.fabric8.kubernetes.api.model.Pod;
-import io.fabric8.kubernetes.api.model.events.v1.Event;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.javaoperatorsdk.operator.api.reconciler.Context;
 import io.javaoperatorsdk.operator.api.reconciler.ControllerConfiguration;
@@ -133,10 +133,9 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                         .withName(pod.getMetadata().getName())
                         .getLog();
 
-        // Get events for the pod
+        // Get events for the pod using core API (which supports involvedObject.name field selector)
         List<Event> events =
-                client.events()
-                        .v1()
+                client.v1()
                         .events()
                         .inNamespace(pod.getMetadata().getNamespace())
                         .withField("involvedObject.name", pod.getMetadata().getName())
