@@ -11,8 +11,10 @@ import io.javaoperatorsdk.operator.api.reconciler.Reconciler;
 import io.javaoperatorsdk.operator.api.reconciler.UpdateControl;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,6 +39,18 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
         }
 
         try {
+            // Check if sync is needed based on refresh interval
+            if (!needsSync(resource)) {
+                log.debug(
+                        "PatternLibrary {} does not need sync yet",
+                        resource.getMetadata().getName());
+                return UpdateControl.noUpdate();
+            }
+
+            log.info(
+                    "IMMEDIATE sync triggered for PatternLibrary: {}",
+                    resource.getMetadata().getName());
+
             // Update status to syncing
             updatePatternLibraryStatus(resource, "Syncing", "Synchronizing pattern repositories");
 
@@ -52,17 +66,21 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
             List<String> availableLibraries =
                     patternSyncService.getAvailableLibraries(resource.getMetadata().getName());
 
-            // Update status with available libraries
+            // Update status with available libraries and sync time
             resource.getStatus().setAvailableLibraries(availableLibraries);
+            resource.getStatus().setLastSyncTime(Instant.now());
+
             updatePatternLibraryStatus(
                     resource,
                     "Ready",
                     String.format(
-                            "Successfully synced %d repositories, %d libraries available",
+                            "IMMEDIATE sync completed: %d repositories, %d libraries available",
                             repositories != null ? repositories.size() : 0,
                             availableLibraries.size()));
 
-            return UpdateControl.patchStatus(resource);
+            // Schedule next reconciliation based on refresh interval
+            return UpdateControl.patchStatus(resource)
+                    .rescheduleAfter(getRefreshInterval(resource), TimeUnit.SECONDS);
 
         } catch (Exception e) {
             log.error("Error reconciling PatternLibrary: {}", resource.getMetadata().getName(), e);
@@ -136,5 +154,98 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
         status.setMessage(message);
         status.setLastSyncTime(Instant.now());
         status.setObservedGeneration(resource.getMetadata().getGeneration());
+    }
+
+    /** Check if the pattern library needs to be synced based on refresh interval */
+    private boolean needsSync(PatternLibrary library) {
+        PatternLibraryStatus status = library.getStatus();
+
+        // Always sync if never synced before
+        if (status == null || status.getLastSyncTime() == null) {
+            log.debug("PatternLibrary {} has never been synced", library.getMetadata().getName());
+            return true;
+        }
+
+        // Parse refresh interval from spec
+        String refreshInterval = library.getSpec().getRefreshInterval();
+        if (refreshInterval == null || refreshInterval.trim().isEmpty()) {
+            refreshInterval = "1h"; // Default to 1 hour
+        }
+
+        try {
+            Duration interval = parseRefreshInterval(refreshInterval);
+            Instant lastSync = status.getLastSyncTime();
+            Instant nextSync = lastSync.plus(interval);
+
+            boolean shouldSync = Instant.now().isAfter(nextSync);
+            if (shouldSync) {
+                log.debug(
+                        "PatternLibrary {} needs sync. Last sync: {}, interval: {}, next sync: {}",
+                        library.getMetadata().getName(),
+                        lastSync,
+                        refreshInterval,
+                        nextSync);
+            }
+
+            return shouldSync;
+        } catch (Exception e) {
+            log.error(
+                    "Error parsing refresh interval '{}' for pattern library {}: {}",
+                    refreshInterval,
+                    library.getMetadata().getName(),
+                    e.getMessage());
+            // Default to 1 hour if parsing fails
+            return status.getLastSyncTime().isBefore(Instant.now().minus(Duration.ofHours(1)));
+        }
+    }
+
+    /** Get the refresh interval in seconds for rescheduling */
+    private long getRefreshInterval(PatternLibrary library) {
+        String refreshInterval = library.getSpec().getRefreshInterval();
+        if (refreshInterval == null || refreshInterval.trim().isEmpty()) {
+            refreshInterval = "1h"; // Default to 1 hour
+        }
+
+        try {
+            Duration interval = parseRefreshInterval(refreshInterval);
+            return interval.getSeconds();
+        } catch (Exception e) {
+            log.error(
+                    "Error parsing refresh interval '{}' for pattern library {}: {}",
+                    refreshInterval,
+                    library.getMetadata().getName(),
+                    e.getMessage());
+            return 3600; // Default to 1 hour in seconds
+        }
+    }
+
+    /** Parse refresh interval string into Duration */
+    private Duration parseRefreshInterval(String refreshInterval) {
+        // Support formats like: 30s, 5m, 1h, 2h30m, 1d
+        refreshInterval = refreshInterval.trim().toLowerCase();
+
+        if (refreshInterval.matches("\\d+s")) {
+            return Duration.ofSeconds(Long.parseLong(refreshInterval.replaceAll("s", "")));
+        } else if (refreshInterval.matches("\\d+m")) {
+            return Duration.ofMinutes(Long.parseLong(refreshInterval.replaceAll("m", "")));
+        } else if (refreshInterval.matches("\\d+h")) {
+            return Duration.ofHours(Long.parseLong(refreshInterval.replaceAll("h", "")));
+        } else if (refreshInterval.matches("\\d+d")) {
+            return Duration.ofDays(Long.parseLong(refreshInterval.replaceAll("d", "")));
+        }
+
+        // Support compound formats like "1h30m"
+        if (refreshInterval.matches("\\d+h\\d+m")) {
+            String[] parts = refreshInterval.split("h");
+            long hours = Long.parseLong(parts[0]);
+            long minutes = Long.parseLong(parts[1].replaceAll("m", ""));
+            return Duration.ofHours(hours).plusMinutes(minutes);
+        }
+
+        // Default to 1 hour if format is not recognized
+        log.warn(
+                "Unrecognized refresh interval format: '{}', defaulting to 1 hour",
+                refreshInterval);
+        return Duration.ofHours(1);
     }
 }
