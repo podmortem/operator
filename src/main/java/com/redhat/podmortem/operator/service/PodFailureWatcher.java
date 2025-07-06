@@ -282,7 +282,9 @@ public class PodFailureWatcher {
                 podmortem.setStatus(new PodmortemStatus());
             }
 
-            podmortem.getStatus().setMessage(message + " (Pod: " + pod.getMetadata().getName() + ")");
+            podmortem
+                    .getStatus()
+                    .setMessage(message + " (Pod: " + pod.getMetadata().getName() + ")");
             podmortem.getStatus().setPhase("Processing");
 
             client.resource(podmortem).patchStatus();
