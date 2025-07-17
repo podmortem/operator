@@ -1,7 +1,6 @@
 package com.redhat.podmortem.operator.service;
 
-import com.redhat.podmortem.common.model.analysis.AnalysisResult;
-import com.redhat.podmortem.common.model.kube.aiprovider.AIProvider;
+import com.redhat.podmortem.common.model.analysis.AnalysisRequest;
 import com.redhat.podmortem.common.model.provider.AIResponse;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -14,12 +13,12 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 @ApplicationScoped
 @RegisterRestClient(configKey = "ai-interface")
-@Path("/api/v1")
+@Path("/api/v1/ai-analysis")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public interface AIInterfaceRestClient {
 
     @POST
-    @Path("/analyze")
-    Uni<AIResponse> generateExplanation(AnalysisResult analysisResult, AIProvider aiProvider);
+    @Path("/explain")
+    Uni<AIResponse> explainFailure(AnalysisRequest request);
 }

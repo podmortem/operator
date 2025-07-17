@@ -152,74 +152,112 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
         if (Boolean.TRUE.equals(resource.getSpec().getAiAnalysisEnabled())
                 && resource.getSpec().getAiProviderRef() != null) {
 
-            // Get AI provider
-            Optional<AIProvider> aiProvider = getAIProvider(resource);
-
-            if (aiProvider.isPresent()) {
-                // Send to AI interface for explanation
-                aiInterfaceClient
-                        .generateExplanation(analysisResult, aiProvider.get())
-                        .subscribe()
-                        .with(
-                                aiResponse -> {
-                                    log.info(
-                                            "AI analysis completed for pod: {}",
-                                            pod.getMetadata().getName());
+            // Use reactive approach to avoid blocking the event loop
+            getAIProviderAsync(resource)
+                    .subscribe()
+                    .with(
+                            aiProvider -> {
+                                if (aiProvider.isPresent()) {
+                                    // Send to AI interface for explanation
+                                    aiInterfaceClient
+                                            .generateExplanation(analysisResult, aiProvider.get())
+                                            .subscribe()
+                                            .with(
+                                                    aiResponse -> {
+                                                        log.info(
+                                                                "AI analysis completed for pod: {}",
+                                                                pod.getMetadata().getName());
+                                                        updatePodFailureStatus(
+                                                                resource,
+                                                                pod,
+                                                                "Analysis completed with AI explanation: "
+                                                                        + aiResponse.getExplanation());
+                                                    },
+                                                    failure -> {
+                                                        log.error(
+                                                                "AI analysis failed for pod: {}",
+                                                                pod.getMetadata().getName(),
+                                                                failure);
+                                                        updatePodFailureStatus(
+                                                                resource,
+                                                                pod,
+                                                                "Pattern analysis completed, AI analysis failed: "
+                                                                        + failure.getMessage());
+                                                    });
+                                } else {
+                                    log.warn(
+                                            "AI provider not found for Podmortem: {}",
+                                            resource.getMetadata().getName());
                                     updatePodFailureStatus(
-                                            resource,
-                                            pod,
-                                            "Analysis completed with AI explanation: "
-                                                    + aiResponse.getExplanation());
-                                },
-                                failure -> {
-                                    log.error(
-                                            "AI analysis failed for pod: {}",
-                                            pod.getMetadata().getName(),
-                                            failure);
-                                    updatePodFailureStatus(
-                                            resource,
-                                            pod,
-                                            "Pattern analysis completed, AI analysis failed: "
-                                                    + failure.getMessage());
-                                });
-            } else {
-                log.warn(
-                        "AI provider not found for Podmortem: {}",
-                        resource.getMetadata().getName());
-                updatePodFailureStatus(
-                        resource, pod, "Pattern analysis completed, AI provider not found");
-            }
+                                            resource, pod, "Pattern analysis completed, AI provider not found");
+                                }
+                            },
+                            failure -> {
+                                log.error(
+                                        "Failed to get AI provider for pod: {}",
+                                        pod.getMetadata().getName(),
+                                        failure);
+                                updatePodFailureStatus(
+                                        resource,
+                                        pod,
+                                        "Pattern analysis completed, AI provider lookup failed");
+                            });
         } else {
             // Only pattern analysis, no AI
             updatePodFailureStatus(resource, pod, "Pattern analysis completed");
         }
     }
 
-    private Optional<AIProvider> getAIProvider(Podmortem resource) {
+    /** Get AI provider for the Podmortem resource asynchronously */
+    private io.smallrye.mutiny.Uni<Optional<AIProvider>> getAIProviderAsync(Podmortem resource) {
         if (resource.getSpec().getAiProviderRef() == null) {
-            return Optional.empty();
+            return io.smallrye.mutiny.Uni.createFrom().item(Optional.empty());
         }
 
-        String providerName = resource.getSpec().getAiProviderRef().getName();
-        String providerNamespace = resource.getSpec().getAiProviderRef().getNamespace();
+        // Run the blocking Kubernetes API call on a worker thread
+        return io.smallrye.mutiny.Uni.createFrom()
+                .item(
+                        () -> {
+                            try {
+                                String providerName = resource.getSpec().getAiProviderRef().getName();
+                                String providerNamespace = resource.getSpec().getAiProviderRef().getNamespace();
 
-        // Default to same namespace if not specified
-        if (providerNamespace == null) {
-            providerNamespace = resource.getMetadata().getNamespace();
-        }
+                                // Default to same namespace if not specified
+                                if (providerNamespace == null) {
+                                    providerNamespace = resource.getMetadata().getNamespace();
+                                }
 
-        try {
-            AIProvider aiProvider =
-                    client.resources(AIProvider.class)
-                            .inNamespace(providerNamespace)
-                            .withName(providerName)
-                            .get();
+                                log.debug(
+                                        "Looking up AI provider: {}/{}",
+                                        providerNamespace,
+                                        providerName);
 
-            return Optional.ofNullable(aiProvider);
-        } catch (Exception e) {
-            log.error("Error fetching AI provider: {}/{}", providerNamespace, providerName, e);
-            return Optional.empty();
-        }
+                                AIProvider aiProvider =
+                                        client.resources(AIProvider.class)
+                                                .inNamespace(providerNamespace)
+                                                .withName(providerName)
+                                                .get();
+
+                                if (aiProvider != null) {
+                                    log.info(
+                                            "Found AI provider: {}/{}",
+                                            providerNamespace,
+                                            providerName);
+                                    return Optional.of(aiProvider);
+                                } else {
+                                    log.warn(
+                                            "AI provider not found: {}/{}",
+                                            providerNamespace,
+                                            providerName);
+                                    return Optional.<AIProvider>empty();
+                                }
+                            } catch (Exception e) {
+                                log.error("Error fetching AI provider: {}", e.getMessage(), e);
+                                return Optional.<AIProvider>empty();
+                            }
+                        })
+                .runSubscriptionOn(
+                        io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
     }
 
     private void updatePodmortemStatus(Podmortem resource, String phase, String message) {
