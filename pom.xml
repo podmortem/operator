@@ -16,7 +16,7 @@
         <skipITs>true</skipITs>
         <surefire-plugin.version>3.5.3</surefire-plugin.version>
 
-        <podmortem.common.lib.version>1.0-49138e3-SNAPSHOT</podmortem.common.lib.version>
+        <podmortem.common.lib.version>1.0-1bbf084-SNAPSHOT</podmortem.common.lib.version>
     </properties>
 
     <repositories>
@@ -59,6 +59,10 @@
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-rest</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-rest-jackson</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkiverse.operatorsdk</groupId>
