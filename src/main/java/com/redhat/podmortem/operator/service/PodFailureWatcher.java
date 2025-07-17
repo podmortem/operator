@@ -34,7 +34,7 @@ public class PodFailureWatcher {
     // Track processed failures to avoid duplicates
     private final Map<String, Instant> processedFailures = new ConcurrentHashMap<>();
 
-    /** Start watching for pod failures immediately on startup */
+    /** Start watching for pod failures on startup */
     public void onStartup(@Observes StartupEvent event) {
         log.info("Starting real-time pod failure watcher");
         startPodWatcher();
@@ -107,7 +107,7 @@ public class PodFailureWatcher {
             }
         }
 
-        log.info("IMMEDIATE pod failure detected: {}", podKey);
+        log.info("Pod failure detected: {}", podKey);
 
         // Mark as processed
         if (failureTime != null) {
@@ -171,7 +171,7 @@ public class PodFailureWatcher {
     /** Process the pod failure for a specific Podmortem resource */
     private void processPodFailureForPodmortem(Podmortem podmortem, Pod pod) {
         log.info(
-                "Processing immediate pod failure for pod: {} with podmortem: {}",
+                "Processing pod failure for pod: {} with podmortem: {}",
                 pod.getMetadata().getName(),
                 podmortem.getMetadata().getName());
 
@@ -186,25 +186,22 @@ public class PodFailureWatcher {
                     .with(
                             analysisResult -> {
                                 log.info(
-                                        "IMMEDIATE log analysis completed for pod: {}",
+                                        "Log analysis completed for pod: {}",
                                         pod.getMetadata().getName());
                                 handleAnalysisResult(podmortem, pod, analysisResult);
                             },
                             failure -> {
                                 log.error(
-                                        "IMMEDIATE log analysis failed for pod: {}",
+                                        "Log analysis failed for pod: {}",
                                         pod.getMetadata().getName(),
                                         failure);
-                                updatePodFailureStatus(
+                                updatePodFailureStatusAsync(
                                         podmortem, pod, "Analysis failed: " + failure.getMessage());
                             });
 
         } catch (Exception e) {
-            log.error(
-                    "Error processing immediate pod failure for pod: {}",
-                    pod.getMetadata().getName(),
-                    e);
-            updatePodFailureStatus(podmortem, pod, "Processing failed: " + e.getMessage());
+            log.error("Error processing pod failure for pod: {}", pod.getMetadata().getName(), e);
+            updatePodFailureStatusAsync(podmortem, pod, "Processing failed: " + e.getMessage());
         }
     }
 
@@ -229,95 +226,175 @@ public class PodFailureWatcher {
         return new PodFailureData(pod, podLogs, events);
     }
 
-    /** Handle analysis result from log parser */
+    /** Handle analysis result with AI provider */
     private void handleAnalysisResult(Podmortem podmortem, Pod pod, AnalysisResult analysisResult) {
-        log.info("Handling IMMEDIATE analysis result for pod: {}", pod.getMetadata().getName());
+        log.info("Handling analysis result for pod: {}", pod.getMetadata().getName());
 
         // Check if AI analysis is enabled
         if (Boolean.TRUE.equals(podmortem.getSpec().getAiAnalysisEnabled())
                 && podmortem.getSpec().getAiProviderRef() != null) {
 
-            Optional<AIProvider> aiProvider = getAIProvider(podmortem);
-            if (aiProvider.isPresent()) {
-                // Send to AI interface
-                aiInterfaceClient
-                        .generateExplanation(analysisResult, aiProvider.get())
-                        .subscribe()
-                        .with(
-                                aiResponse -> {
-                                    log.info(
-                                            "IMMEDIATE AI analysis completed for pod: {}",
-                                            pod.getMetadata().getName());
-                                    updatePodFailureStatus(
+            // Use reactive approach to avoid blocking the event loop
+            getAIProviderAsync(podmortem)
+                    .subscribe()
+                    .with(
+                            aiProvider -> {
+                                if (aiProvider.isPresent()) {
+                                    // Send to AI interface
+                                    aiInterfaceClient
+                                            .generateExplanation(analysisResult, aiProvider.get())
+                                            .subscribe()
+                                            .with(
+                                                    aiResponse -> {
+                                                        log.info(
+                                                                "AI analysis completed for pod: {}",
+                                                                pod.getMetadata().getName());
+                                                        updatePodFailureStatusAsync(
+                                                                podmortem,
+                                                                pod,
+                                                                "Analysis completed with AI: "
+                                                                        + aiResponse
+                                                                                .getExplanation());
+                                                    },
+                                                    failure -> {
+                                                        log.error(
+                                                                "AI analysis failed for pod: {}",
+                                                                pod.getMetadata().getName(),
+                                                                failure);
+                                                        updatePodFailureStatusAsync(
+                                                                podmortem,
+                                                                pod,
+                                                                "Pattern analysis completed, AI failed: "
+                                                                        + failure.getMessage());
+                                                    });
+                                } else {
+                                    updatePodFailureStatusAsync(
                                             podmortem,
                                             pod,
-                                            "IMMEDIATE Analysis completed with AI: "
-                                                    + aiResponse.getExplanation());
-                                },
-                                failure -> {
-                                    log.error(
-                                            "IMMEDIATE AI analysis failed for pod: {}",
-                                            pod.getMetadata().getName(),
-                                            failure);
-                                    updatePodFailureStatus(
-                                            podmortem,
-                                            pod,
-                                            "IMMEDIATE Pattern analysis completed, AI failed: "
-                                                    + failure.getMessage());
-                                });
-            } else {
-                updatePodFailureStatus(
-                        podmortem, pod, "IMMEDIATE Analysis completed, AI provider not found");
-            }
+                                            "Analysis completed, AI provider not found");
+                                }
+                            },
+                            failure -> {
+                                log.error(
+                                        "Failed to get AI provider for pod: {}",
+                                        pod.getMetadata().getName(),
+                                        failure);
+                                updatePodFailureStatusAsync(
+                                        podmortem,
+                                        pod,
+                                        "Analysis completed, AI provider lookup failed");
+                            });
         } else {
-            updatePodFailureStatus(
-                    podmortem, pod, "IMMEDIATE Pattern analysis completed (AI disabled)");
+            updatePodFailureStatusAsync(podmortem, pod, "Pattern analysis completed (AI disabled)");
         }
     }
 
-    /** Update the Podmortem resource status */
-    private void updatePodFailureStatus(Podmortem podmortem, Pod pod, String message) {
-        try {
-            if (podmortem.getStatus() == null) {
-                podmortem.setStatus(new PodmortemStatus());
-            }
+    /** Update the Podmortem resource status asynchronously */
+    private void updatePodFailureStatusAsync(Podmortem podmortem, Pod pod, String message) {
+        // Use Uni.createFrom().item() to run on worker thread
+        io.smallrye.mutiny.Uni.createFrom()
+                .item(
+                        () -> {
+                            try {
+                                if (podmortem.getStatus() == null) {
+                                    podmortem.setStatus(new PodmortemStatus());
+                                }
 
-            podmortem
-                    .getStatus()
-                    .setMessage(message + " (Pod: " + pod.getMetadata().getName() + ")");
-            podmortem.getStatus().setPhase("Processing");
+                                podmortem
+                                        .getStatus()
+                                        .setMessage(
+                                                message
+                                                        + " (Pod: "
+                                                        + pod.getMetadata().getName()
+                                                        + ")");
+                                podmortem.getStatus().setPhase("Processing");
 
-            client.resource(podmortem).patchStatus();
-            log.info(
-                    "Updated IMMEDIATE status for pod {}: {}",
-                    pod.getMetadata().getName(),
-                    message);
+                                client.resource(podmortem).patchStatus();
+                                log.info(
+                                        "Updated status for pod {}: {}",
+                                        pod.getMetadata().getName(),
+                                        message);
+                                return true;
 
-        } catch (Exception e) {
-            log.error(
-                    "Failed to update IMMEDIATE podmortem status for pod {}: {}",
-                    pod.getMetadata().getName(),
-                    e.getMessage(),
-                    e);
-        }
+                            } catch (Exception e) {
+                                log.error(
+                                        "Failed to update podmortem status for pod {}: {}",
+                                        pod.getMetadata().getName(),
+                                        e.getMessage(),
+                                        e);
+                                return false;
+                            }
+                        })
+                .runSubscriptionOn(
+                        io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())
+                .subscribe()
+                .with(
+                        result -> {
+                            if (result) {
+                                log.debug(
+                                        "Status update completed for pod: {}",
+                                        pod.getMetadata().getName());
+                            }
+                        },
+                        failure ->
+                                log.error(
+                                        "Status update failed for pod: {}",
+                                        pod.getMetadata().getName(),
+                                        failure));
     }
 
-    /** Get AI provider for the Podmortem resource */
-    private Optional<AIProvider> getAIProvider(Podmortem podmortem) {
+    /** Get AI provider for the Podmortem resource asynchronously */
+    private io.smallrye.mutiny.Uni<Optional<AIProvider>> getAIProviderAsync(Podmortem podmortem) {
         if (podmortem.getSpec().getAiProviderRef() == null) {
-            return Optional.empty();
+            return io.smallrye.mutiny.Uni.createFrom().item(Optional.empty());
         }
 
-        try {
-            return Optional.of(
-                    client.resources(AIProvider.class)
-                            .inNamespace(podmortem.getMetadata().getNamespace())
-                            .withName(podmortem.getSpec().getAiProviderRef().getName())
-                            .get());
-        } catch (Exception e) {
-            log.error("Failed to get AI provider: {}", e.getMessage(), e);
-            return Optional.empty();
-        }
+        // Run the blocking Kubernetes API call on a worker thread
+        return io.smallrye.mutiny.Uni.createFrom()
+                .item(
+                        () -> {
+                            try {
+                                String providerName =
+                                        podmortem.getSpec().getAiProviderRef().getName();
+                                String providerNamespace =
+                                        podmortem.getSpec().getAiProviderRef().getNamespace();
+
+                                // Default to podmortem namespace if not specified
+                                if (providerNamespace == null) {
+                                    providerNamespace = podmortem.getMetadata().getNamespace();
+                                }
+
+                                log.debug(
+                                        "Looking up AI provider: {}/{}",
+                                        providerNamespace,
+                                        providerName);
+
+                                AIProvider aiProvider =
+                                        client.resources(AIProvider.class)
+                                                .inNamespace(providerNamespace)
+                                                .withName(providerName)
+                                                .get();
+
+                                if (aiProvider != null) {
+                                    log.info(
+                                            "Found AI provider: {}/{}",
+                                            providerNamespace,
+                                            providerName);
+                                    return Optional.of(aiProvider);
+                                } else {
+                                    log.warn(
+                                            "AI provider not found: {}/{}",
+                                            providerNamespace,
+                                            providerName);
+                                    return Optional.<AIProvider>empty();
+                                }
+                            } catch (Exception e) {
+                                log.error("Error fetching AI provider: {}", e.getMessage(), e);
+                                return Optional.<AIProvider>empty();
+                            }
+                        })
+                .runSubscriptionOn(
+                        io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
     }
 
     /** Restart the watcher after a failure */
