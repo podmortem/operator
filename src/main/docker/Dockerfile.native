@@ -1,19 +1,24 @@
-FROM registry.access.redhat.com/quarkus/mandrel-for-jdk-21-rhel8:23.1 AS build
+FROM registry.access.redhat.com/quarkus/mandrel-for-jdk-21-rhel8:23.1 AS dependencies
 WORKDIR /home/quarkus
 
 COPY --chown=quarkus:quarkus mvnw .
 COPY --chown=quarkus:quarkus .mvn .mvn
 COPY --chown=quarkus:quarkus pom.xml .
-COPY --chown=quarkus:quarkus src src
+COPY --chown=quarkus:quarkus src/main/resources/settings.xml src/main/resources/settings.xml
+
+ARG GITHUB_USER
+ENV GITHUB_USER=$GITHUB_USER
+
+RUN --mount=type=secret,id=GITHUB_TOKEN,env=GITHUB_TOKEN \
+    ./mvnw --no-transfer-progress -s src/main/resources/settings.xml dependency:go-offline -DskipTests
 
 USER quarkus
 
-ARG GITHUB_USER
-ARG GITHUB_TOKEN
-ENV GITHUB_USER=$GITHUB_USER
-ENV GITHUB_TOKEN=$GITHUB_TOKEN
+FROM dependencies AS build
+COPY --chown=quarkus:quarkus src src
 
-RUN ./mvnw --no-transfer-progress -s src/main/resources/settings.xml -U package -Dnative
+RUN --mount=type=secret,id=GITHUB_TOKEN,env=GITHUB_TOKEN \
+    ./mvnw --no-transfer-progress -s src/main/resources/settings.xml -U package -Dnative -DskipTests
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal
 
