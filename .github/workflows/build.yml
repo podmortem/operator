@@ -1,4 +1,4 @@
-name: CI for Native Docker Image
+name: Build
 
 on:
   push:
@@ -9,10 +9,51 @@ on:
       - main
 
 jobs:
+  warm-cache:
+    name: Warm Dependencies Cache
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GH_PAT }}
+
+      - name: Build dependencies stage
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./src/main/docker/Dockerfile.native
+          target: dependencies
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          cache-from: type=gha,scope=deps
+          cache-to: |
+            type=gha,mode=max,scope=deps
+            ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}/podmortem-operator:deps-cache,mode=max', github.repository_owner) || '' }}
+          tags: |
+            ${{ github.event_name == 'push' && format('ghcr.io/{0}/podmortem-operator:deps-cache', github.repository_owner) || '' }}
+          build-args: |
+            GITHUB_USER=${{ github.actor }}
+          secrets: |
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+
   test-build:
-    name: Test Build on Pull Request
+    name: Test Build
     if: github.event_name == 'pull_request'
-    runs-on: builder
+    needs: warm-cache
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,20 +68,31 @@ jobs:
           file: ./src/main/docker/Dockerfile.native
           platforms: linux/amd64
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=deps
+            type=gha,scope=build-amd64
+          cache-to: type=gha,mode=max,scope=build-amd64
           build-args: |
             GITHUB_USER=${{ github.actor }}
+          secrets: |
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
 
-  build-and-push:
-    name: Build and Push on Main
+  build-arch:
+    name: Build ${{ matrix.arch }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: builder
+    needs: warm-cache
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,19 +107,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GH_PAT }}
 
-      - name: Build and push Docker image
-        id: build-and-push
+      - name: Build and push ${{ matrix.arch }} image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./src/main/docker/Dockerfile.native
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=deps
+            type=gha,scope=build-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=build-${{ matrix.arch }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/podmortem-operator:latest
-            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-${{ matrix.arch }}
           build-args: |
             GITHUB_USER=${{ github.actor }}
+          secrets: |
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+
+  create-manifest:
+    name: Create Multi-Arch Manifest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-arch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to the GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GH_PAT }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/podmortem-operator:latest \
+            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-amd64 \
+            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-arm64
+
+          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }} \
+            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-amd64 \
+            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-arm64
