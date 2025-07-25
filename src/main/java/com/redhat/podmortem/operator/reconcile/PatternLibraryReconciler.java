@@ -48,7 +48,7 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
             }
 
             log.info(
-                    "IMMEDIATE sync triggered for PatternLibrary: {}",
+                    "Sync triggered for PatternLibrary: {}",
                     resource.getMetadata().getName());
 
             // Update status to syncing
@@ -74,7 +74,7 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                     resource,
                     "Ready",
                     String.format(
-                            "IMMEDIATE sync completed: %d repositories, %d libraries available",
+                            "Sync completed: %d repositories, %d libraries available",
                             repositories != null ? repositories.size() : 0,
                             availableLibraries.size()));
 
