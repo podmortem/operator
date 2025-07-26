@@ -171,7 +171,8 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                                                                 resource,
                                                                 pod,
                                                                 "Analysis completed with AI explanation: "
-                                                                        + aiResponse.getExplanation());
+                                                                        + aiResponse
+                                                                                .getExplanation());
                                                     },
                                                     failure -> {
                                                         log.error(
@@ -189,7 +190,9 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                                             "AI provider not found for Podmortem: {}",
                                             resource.getMetadata().getName());
                                     updatePodFailureStatus(
-                                            resource, pod, "Pattern analysis completed, AI provider not found");
+                                            resource,
+                                            pod,
+                                            "Pattern analysis completed, AI provider not found");
                                 }
                             },
                             failure -> {
@@ -219,8 +222,10 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                 .item(
                         () -> {
                             try {
-                                String providerName = resource.getSpec().getAiProviderRef().getName();
-                                String providerNamespace = resource.getSpec().getAiProviderRef().getNamespace();
+                                String providerName =
+                                        resource.getSpec().getAiProviderRef().getName();
+                                String providerNamespace =
+                                        resource.getSpec().getAiProviderRef().getNamespace();
 
                                 // Default to same namespace if not specified
                                 if (providerNamespace == null) {

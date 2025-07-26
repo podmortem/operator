@@ -47,9 +47,7 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                 return UpdateControl.noUpdate();
             }
 
-            log.info(
-                    "Sync triggered for PatternLibrary: {}",
-                    resource.getMetadata().getName());
+            log.info("Sync triggered for PatternLibrary: {}", resource.getMetadata().getName());
 
             // Update status to syncing
             updatePatternLibraryStatus(resource, "Syncing", "Synchronizing pattern repositories");
