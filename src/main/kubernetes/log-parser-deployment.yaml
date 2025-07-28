@@ -3,6 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: podmortem-log-parser-service
+  namespace: podmortem-system
 spec:
   replicas: 1
   selector:
@@ -13,6 +14,14 @@ spec:
       labels:
         app: podmortem-log-parser-service
     spec:
+      # Ensure this pod runs on the same node as the operator for ReadWriteOnce volume sharing
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: podmortem-operator
+            topologyKey: kubernetes.io/hostname
       containers:
       - name: log-parser
         image: ghcr.io/podmortem/podmortem-log-parser:latest
