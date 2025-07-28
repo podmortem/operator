@@ -13,12 +13,12 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 @ApplicationScoped
 @RegisterRestClient(configKey = "ai-interface")
-@Path("/api/v1/ai-analysis")
+@Path("/api/v1/analysis")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public interface AIInterfaceRestClient {
 
     @POST
-    @Path("/explain")
-    Uni<AIResponse> explainFailure(AnalysisRequest request);
+    @Path("/analyze")
+    Uni<AIResponse> analyzeFailure(AnalysisRequest request);
 }

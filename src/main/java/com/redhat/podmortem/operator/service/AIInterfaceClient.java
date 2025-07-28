@@ -36,7 +36,7 @@ public class AIInterfaceClient {
         AnalysisRequest request = new AnalysisRequest(analysisResult, providerConfig);
 
         return restClient
-                .explainFailure(request)
+                .analyzeFailure(request)
                 .onItem()
                 .invoke(response -> log.debug("Received AI explanation response"))
                 .onFailure()
