@@ -53,7 +53,7 @@ jobs:
     name: Test Build
     if: github.event_name == 'pull_request'
     needs: warm-cache
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -81,7 +81,7 @@ jobs:
     name: Build ${{ matrix.arch }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: warm-cache
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: read
       packages: write
@@ -129,7 +129,7 @@ jobs:
     name: Create Multi-Arch Manifest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build-arch
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: read
       packages: write
