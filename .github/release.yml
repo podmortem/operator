@@ -1,0 +1,7 @@
+   categories:
+     - title: Features
+       labels: [feature, enhancement]
+     - title: Fixes
+       labels: [bug, fix, patch]
+     - title: Other
+       labels: [chore]
