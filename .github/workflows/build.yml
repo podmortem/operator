@@ -11,7 +11,7 @@ on:
 jobs:
   warm-cache:
     name: Warm Dependencies Cache
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: read
       packages: write
