@@ -8,10 +8,15 @@ on:
     branches:
       - main
 
+env:
+  IMAGE_NAME: podmortem-operator
+  DOCKERFILE: ./src/main/docker/Dockerfile.native
+  DEP_STAGE: dependencies
+
 jobs:
   warm-cache:
     name: Warm Dependencies Cache
-    runs-on: [self-hosted, amd64]
+    runs-on: [self-hosted, linux]
     permissions:
       contents: read
       packages: write
@@ -34,16 +39,16 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./src/main/docker/Dockerfile.native
-          target: dependencies
+          file: ${{ env.DOCKERFILE }}
+          target: ${{ env.DEP_STAGE }}
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
           cache-from: type=gha,scope=deps
           cache-to: |
             type=gha,mode=max,scope=deps
-            ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}/podmortem-operator:deps-cache,mode=max', github.repository_owner) || '' }}
+            ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}/{1}:deps-cache,mode=max', github.repository_owner, env.IMAGE_NAME) || '' }}
           tags: |
-            ${{ github.event_name == 'push' && format('ghcr.io/{0}/podmortem-operator:deps-cache', github.repository_owner) || '' }}
+            ${{ github.event_name == 'push' && format('ghcr.io/{0}/{1}:deps-cache', github.repository_owner, env.IMAGE_NAME) || '' }}
           build-args: |
             GITHUB_USER=${{ github.actor }}
           secrets: |
@@ -53,7 +58,7 @@ jobs:
     name: Test Build
     if: github.event_name == 'pull_request'
     needs: warm-cache
-    runs-on: [self-hosted, amd64]
+    runs-on: [self-hosted, linux]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -65,7 +70,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./src/main/docker/Dockerfile.native
+          file: ${{ env.DOCKERFILE }}
           platforms: linux/amd64
           push: false
           cache-from: |
@@ -90,7 +95,7 @@ jobs:
         include:
           - arch: amd64
             platform: linux/amd64
-            runner: [self-hosted, amd64]
+            runner: [self-hosted, linux]
           - arch: arm64
             platform: linux/arm64
             runner: ubuntu-22.04-arm
@@ -112,15 +117,15 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./src/main/docker/Dockerfile.native
+          file: ${{ env.DOCKERFILE }}
           platforms: ${{ matrix.platform }}
           push: true
           cache-from: |
             type=gha,scope=deps
             type=gha,scope=build-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=build-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=build-amd64
           tags: |
-            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.arch }}
           build-args: |
             GITHUB_USER=${{ github.actor }}
           secrets: |
@@ -130,7 +135,7 @@ jobs:
     name: Create Multi-Arch Manifest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build-arch
-    runs-on: [self-hosted, amd64]
+    runs-on: [self-hosted, linux]
     permissions:
       contents: read
       packages: write
@@ -144,10 +149,10 @@ jobs:
 
       - name: Create and push multi-arch manifest
         run: |
-          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/podmortem-operator:latest \
-            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-arm64
+          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest \
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-amd64 \
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-arm64
 
-          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }} \
-            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/podmortem-operator:${{ github.sha }}-arm64
+          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-amd64 \
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-arm64
