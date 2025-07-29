@@ -16,6 +16,13 @@ import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Client service for communicating with the AI Interface REST API.
+ *
+ * <p>Handles the conversion of Kubernetes AI Provider Custom Resources to AI provider
+ * configurations, manages authentication credential retrieval, and facilitates AI explanation
+ * generation for pod failure analysis.
+ */
 @ApplicationScoped
 public class AIInterfaceClient {
 
@@ -25,14 +32,22 @@ public class AIInterfaceClient {
 
     @Inject KubernetesClient kubernetesClient;
 
+    /**
+     * Generates an AI explanation for a pod failure analysis result.
+     *
+     * <p>Converts the AIProvider CRD to an AIProviderConfig, creates an analysis request, and
+     * submits it to the AI interface service for explanation generation.
+     *
+     * @param analysisResult the log pattern analysis results to explain
+     * @param aiProvider the AI provider configuration from Kubernetes CRD
+     * @return a Uni that emits the AI-generated explanation response
+     */
     public Uni<AIResponse> generateExplanation(
             AnalysisResult analysisResult, AIProvider aiProvider) {
         log.debug("Sending AI explanation request for analysis");
 
-        // Convert AIProvider CRD to AIProviderConfig
         AIProviderConfig providerConfig = convertToProviderConfig(aiProvider);
 
-        // Create AnalysisRequest
         AnalysisRequest request = new AnalysisRequest(analysisResult, providerConfig);
 
         return restClient
@@ -43,7 +58,16 @@ public class AIInterfaceClient {
                 .invoke(throwable -> log.error("AI explanation generation failed", throwable));
     }
 
-    /** Convert AIProvider CRD to AIProviderConfig for AI interface */
+    /**
+     * Converts an AIProvider Kubernetes CRD to an AIProviderConfig for the AI interface.
+     *
+     * <p>Maps CRD specification fields to the configuration format expected by the AI interface
+     * service, including loading authentication credentials from Kubernetes secrets when
+     * configured.
+     *
+     * @param aiProvider the AI provider CRD to convert
+     * @return an AIProviderConfig object for AI interface consumption
+     */
     private AIProviderConfig convertToProviderConfig(AIProvider aiProvider) {
         AIProviderConfig config = new AIProviderConfig();
 
@@ -59,12 +83,10 @@ public class AIInterfaceClient {
         config.setMaxTokens(spec.getMaxTokens() != null ? spec.getMaxTokens() : 500);
         config.setTemperature(spec.getTemperature() != null ? spec.getTemperature() : 0.3);
 
-        // Convert additional config to appropriate format
         if (spec.getAdditionalConfig() != null) {
             config.setAdditionalHeaders(spec.getAdditionalConfig());
         }
 
-        // Load authentication token from secret if configured
         if (spec.getAuthenticationRef() != null) {
             String authToken =
                     loadAuthTokenFromSecret(
@@ -82,7 +104,17 @@ public class AIInterfaceClient {
         return config;
     }
 
-    /** Load authentication token from Kubernetes secret */
+    /**
+     * Loads an authentication token from a Kubernetes secret.
+     *
+     * <p>Retrieves and decodes authentication credentials from Kubernetes secret data, supporting
+     * base64 encoded values as typically stored in secrets.
+     *
+     * @param namespace the namespace containing the secret
+     * @param secretName the name of the secret
+     * @param secretKey the key within the secret containing the authentication token
+     * @return the decoded authentication token, or null if not found or on error
+     */
     private String loadAuthTokenFromSecret(String namespace, String secretName, String secretKey) {
         try {
             Secret secret =
@@ -103,7 +135,6 @@ public class AIInterfaceClient {
                 return null;
             }
 
-            // Decode base64 encoded secret data
             String encodedToken = data.get(secretKey);
             return new String(Base64.getDecoder().decode(encodedToken));
 

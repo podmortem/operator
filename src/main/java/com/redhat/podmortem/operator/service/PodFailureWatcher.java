@@ -22,6 +22,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Real-time pod failure monitoring service using Kubernetes watch APIs.
+ *
+ * <p>Continuously monitors all pods across all namespaces for failure events, automatically
+ * triggering failure analysis workflows when pods terminate with non-zero exit codes. Provides
+ * duplicate detection and automatic recovery from watch connection failures.
+ */
 @ApplicationScoped
 public class PodFailureWatcher {
 
@@ -31,17 +38,29 @@ public class PodFailureWatcher {
     @Inject LogParserClient logParserClient;
     @Inject AIInterfaceClient aiInterfaceClient;
 
-    // Track processed failures to avoid duplicates
+    // track processed failures
     private final Map<String, Instant> processedFailures = new ConcurrentHashMap<>();
 
-    /** Start watching for pod failures on startup */
+    /**
+     * Initializes the pod failure watcher on application startup.
+     *
+     * <p>Automatically starts monitoring pod events when the application starts.
+     *
+     * @param event the Quarkus startup event
+     */
     public void onStartup(@Observes StartupEvent event) {
         log.info("Starting real-time pod failure watcher");
         startPodWatcher();
     }
 
-    /** Watch all pods in all namespaces for status changes */
+    /**
+     * Starts the Kubernetes pod watcher for real-time failure detection.
+     *
+     * <p>Establishes a watch on all pods across all namespaces, monitoring for state changes that
+     * indicate failures. Includes automatic recovery logic for watch connection failures.
+     */
     private void startPodWatcher() {
+        // TODO: only monitor pods that podmortem is configured to monitor
         client.pods()
                 .inAnyNamespace()
                 .watch(
@@ -49,7 +68,7 @@ public class PodFailureWatcher {
                             @Override
                             public void eventReceived(Action action, Pod pod) {
                                 try {
-                                    // Only process MODIFIED events where pod has failed
+                                    // only process MODIFIED events where pod has failed
                                     if (action == Action.MODIFIED && hasPodFailed(pod)) {
                                         handlePodFailure(pod);
                                     }
@@ -69,7 +88,7 @@ public class PodFailureWatcher {
                                             "Pod watcher closed due to error: {}",
                                             cause.getMessage(),
                                             cause);
-                                    // Restart the watcher after a delay
+                                    // restart the watcher after a delay
                                     restartWatcher();
                                 } else {
                                     log.info("Pod watcher closed normally");
@@ -78,7 +97,14 @@ public class PodFailureWatcher {
                         });
     }
 
-    /** Check if a pod has failed */
+    /**
+     * Determines if a pod has failed by examining container statuses.
+     *
+     * <p>A pod is considered failed if any container has terminated with a non-zero exit code.
+     *
+     * @param pod the pod to check for failure
+     * @return true if the pod has failed, false otherwise
+     */
     private boolean hasPodFailed(Pod pod) {
         if (pod.getStatus() == null || pod.getStatus().getContainerStatuses() == null) {
             return false;
@@ -93,11 +119,18 @@ public class PodFailureWatcher {
                                                 != 0);
     }
 
-    /** Handle a pod failure event */
+    /**
+     * Handles a pod failure event with duplicate detection and processing orchestration.
+     *
+     * <p>Tracks processed failures to avoid duplicate analysis, finds matching Podmortem resources,
+     * and initiates failure processing workflows.
+     *
+     * @param pod the failed pod to process
+     */
     private void handlePodFailure(Pod pod) {
         String podKey = pod.getMetadata().getNamespace() + "/" + pod.getMetadata().getName();
 
-        // Check if we've already processed this failure
+        // check if we've already processed this failure
         Instant failureTime = getFailureTime(pod);
         if (failureTime != null && processedFailures.containsKey(podKey)) {
             Instant previousFailure = processedFailures.get(podKey);
@@ -109,12 +142,12 @@ public class PodFailureWatcher {
 
         log.info("Pod failure detected: {}", podKey);
 
-        // Mark as processed
+        // mark as processed
         if (failureTime != null) {
             processedFailures.put(podKey, failureTime);
         }
 
-        // Find matching Podmortem resources
+        // find matching Podmortem resources
         List<Podmortem> podmortemResources = findMatchingPodmortemResources(pod);
 
         for (Podmortem podmortem : podmortemResources) {
@@ -122,7 +155,12 @@ public class PodFailureWatcher {
         }
     }
 
-    /** Get the failure timestamp from the pod */
+    /**
+     * Extracts the failure timestamp from a pod's container status.
+     *
+     * @param pod the pod to extract failure time from
+     * @return the timestamp when the pod failed, or null if not available
+     */
     private Instant getFailureTime(Pod pod) {
         if (pod.getStatus() == null || pod.getStatus().getContainerStatuses() == null) {
             return null;
@@ -137,7 +175,12 @@ public class PodFailureWatcher {
                 .orElse(null);
     }
 
-    /** Find Podmortem resources that match this pod */
+    /**
+     * Finds all Podmortem resources that have selectors matching the failed pod.
+     *
+     * @param pod the failed pod to find matches for
+     * @return a list of Podmortem resources with matching selectors
+     */
     private List<Podmortem> findMatchingPodmortemResources(Pod pod) {
         List<Podmortem> allPodmortem =
                 client.resources(Podmortem.class).inAnyNamespace().list().getItems();
@@ -147,7 +190,16 @@ public class PodFailureWatcher {
                 .toList();
     }
 
-    /** Check if a pod matches the Podmortem selector */
+    /**
+     * Determines if a pod matches a Podmortem resource's label selector.
+     *
+     * <p>Compares the pod's labels against the Podmortem's selector to determine if this failure
+     * should be processed by that Podmortem resource.
+     *
+     * @param pod the pod to check for matching
+     * @param podmortem the Podmortem resource with selector criteria
+     * @return true if the pod matches the selector, false otherwise
+     */
     private boolean podMatchesSelector(Pod pod, Podmortem podmortem) {
         if (podmortem.getSpec() == null || podmortem.getSpec().getPodSelector() == null) {
             return false;
@@ -163,12 +215,20 @@ public class PodFailureWatcher {
             return false;
         }
 
-        // Check if all selector labels match pod labels
+        // check if all selector labels match pod labels
         return selector.entrySet().stream()
                 .allMatch(entry -> entry.getValue().equals(podLabels.get(entry.getKey())));
     }
 
-    /** Process the pod failure for a specific Podmortem resource */
+    /**
+     * Processes a pod failure for a specific Podmortem resource.
+     *
+     * <p>Collects comprehensive failure data and initiates the analysis workflow including pattern
+     * analysis and optional AI explanation generation.
+     *
+     * @param podmortem the Podmortem resource managing this failure
+     * @param pod the failed pod to process
+     */
     private void processPodFailureForPodmortem(Podmortem podmortem, Pod pod) {
         log.info(
                 "Processing pod failure for pod: {} with podmortem: {}",
@@ -176,10 +236,8 @@ public class PodFailureWatcher {
                 podmortem.getMetadata().getName());
 
         try {
-            // Collect failure data
             PodFailureData failureData = collectPodFailureData(pod);
 
-            // Send to log parser for analysis
             logParserClient
                     .analyzeLog(failureData)
                     .subscribe()
@@ -205,16 +263,19 @@ public class PodFailureWatcher {
         }
     }
 
-    /** Collect pod failure data including logs and events */
+    /**
+     * Collects comprehensive failure data including logs and events for analysis.
+     *
+     * @param pod the failed pod to collect data from
+     * @return a PodFailureData object containing all diagnostic information
+     */
     private PodFailureData collectPodFailureData(Pod pod) {
-        // Get pod logs
         String podLogs =
                 client.pods()
                         .inNamespace(pod.getMetadata().getNamespace())
                         .withName(pod.getMetadata().getName())
                         .getLog();
 
-        // Get events for the pod
         List<Event> events =
                 client.v1()
                         .events()
@@ -226,21 +287,27 @@ public class PodFailureWatcher {
         return new PodFailureData(pod, podLogs, events);
     }
 
-    /** Handle analysis result with AI provider */
+    /**
+     * Handles analysis results from the log parser and optionally requests AI explanation.
+     *
+     * <p>Based on the Podmortem configuration, either completes with pattern analysis only or
+     * forwards results to the AI interface for explanation generation.
+     *
+     * @param podmortem the Podmortem resource managing this analysis
+     * @param pod the pod that was analyzed
+     * @param analysisResult the pattern analysis results from log parsing
+     */
     private void handleAnalysisResult(Podmortem podmortem, Pod pod, AnalysisResult analysisResult) {
         log.info("Handling analysis result for pod: {}", pod.getMetadata().getName());
 
-        // Check if AI analysis is enabled
         if (Boolean.TRUE.equals(podmortem.getSpec().getAiAnalysisEnabled())
                 && podmortem.getSpec().getAiProviderRef() != null) {
 
-            // Use reactive approach to avoid blocking the event loop
             getAIProviderAsync(podmortem)
                     .subscribe()
                     .with(
                             aiProvider -> {
                                 if (aiProvider.isPresent()) {
-                                    // Send to AI interface
                                     aiInterfaceClient
                                             .generateExplanation(analysisResult, aiProvider.get())
                                             .subscribe()
@@ -289,9 +356,14 @@ public class PodFailureWatcher {
         }
     }
 
-    /** Update the Podmortem resource status asynchronously */
+    /**
+     * Asynchronously updates the Podmortem resource status for a specific pod failure.
+     *
+     * @param podmortem the Podmortem resource to update
+     * @param pod the pod that was processed
+     * @param message the status message for this failure
+     */
     private void updatePodFailureStatusAsync(Podmortem podmortem, Pod pod, String message) {
-        // Use Uni.createFrom().item() to run on worker thread
         io.smallrye.mutiny.Uni.createFrom()
                 .item(
                         () -> {
@@ -343,13 +415,17 @@ public class PodFailureWatcher {
                                         failure));
     }
 
-    /** Get AI provider for the Podmortem resource asynchronously */
+    /**
+     * Asynchronously retrieves the AI provider referenced by a Podmortem resource.
+     *
+     * @param podmortem the Podmortem resource containing the AI provider reference
+     * @return a Uni that emits an Optional containing the AI provider if found
+     */
     private io.smallrye.mutiny.Uni<Optional<AIProvider>> getAIProviderAsync(Podmortem podmortem) {
         if (podmortem.getSpec().getAiProviderRef() == null) {
             return io.smallrye.mutiny.Uni.createFrom().item(Optional.empty());
         }
 
-        // Run the blocking Kubernetes API call on a worker thread
         return io.smallrye.mutiny.Uni.createFrom()
                 .item(
                         () -> {
@@ -359,7 +435,6 @@ public class PodFailureWatcher {
                                 String providerNamespace =
                                         podmortem.getSpec().getAiProviderRef().getNamespace();
 
-                                // Default to podmortem namespace if not specified
                                 if (providerNamespace == null) {
                                     providerNamespace = podmortem.getMetadata().getNamespace();
                                 }
@@ -397,7 +472,7 @@ public class PodFailureWatcher {
                         io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
     }
 
-    /** Restart the watcher after a failure */
+    /** Restarts the pod watcher after a connection failure. */
     private void restartWatcher() {
         new Thread(
                         () -> {

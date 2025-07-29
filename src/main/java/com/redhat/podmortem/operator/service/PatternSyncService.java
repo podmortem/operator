@@ -14,12 +14,31 @@ import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Service for synchronizing pattern definitions from external Git repositories.
+ *
+ * <p>Manages Git clone and pull operations for pattern repositories, handles authentication
+ * credentials, validates pattern files, and provides discovery of available pattern libraries. The
+ * service maintains a shared cache directory that can be accessed by log parser services.
+ */
 @ApplicationScoped
 public class PatternSyncService {
 
     private static final Logger log = LoggerFactory.getLogger(PatternSyncService.class);
-    private static final String PATTERN_CACHE_DIR = "/shared/patterns"; // Shared with log-parser
+    private static final String PATTERN_CACHE_DIR = "/shared/patterns"; // shared with log-parser
 
+    /**
+     * Synchronizes a pattern repository for a specific pattern library.
+     *
+     * <p>Performs either a clone or pull operation depending on whether the repository already
+     * exists locally. Validates the synchronized patterns and maintains a directory structure
+     * organized by library name and repository.
+     *
+     * @param libraryName the name of the pattern library requesting this sync
+     * @param repo the repository configuration containing URL, branch, and credentials
+     * @param credentials optional authentication credentials (username:password or token)
+     * @throws RuntimeException if the Git operation fails
+     */
     public void syncRepository(String libraryName, PatternRepository repo, String credentials) {
         try {
             log.info("Syncing repository {} for library {}", repo.getName(), libraryName);
@@ -57,6 +76,15 @@ public class PatternSyncService {
         }
     }
 
+    /**
+     * Discovers available pattern libraries by scanning YAML files in the cache.
+     *
+     * <p>Scans the library's cache directory for YAML/YML files and returns a list of discovered
+     * pattern library names (filename without extension).
+     *
+     * @param libraryName the pattern library name to scan for available patterns
+     * @return a list of discovered pattern library names
+     */
     public List<String> getAvailableLibraries(String libraryName) {
         List<String> libraries = new ArrayList<>();
         try {
@@ -85,6 +113,18 @@ public class PatternSyncService {
         return libraries;
     }
 
+    /**
+     * Clones a Git repository to the local cache directory.
+     *
+     * <p>Performs initial clone of a repository with support for branch selection and
+     * authentication credentials. Supports both username:password and token-based authentication
+     * for HTTPS repositories.
+     *
+     * @param repoPath the local path where the repository should be cloned
+     * @param repo the repository configuration containing URL and branch information
+     * @param credentials optional authentication credentials in "username:password" or token format
+     * @throws RuntimeException if the Git clone operation fails
+     */
     private void cloneRepository(Path repoPath, PatternRepository repo, String credentials) {
         try {
             log.info("Cloning repository {} to {}", repo.getUrl(), repoPath);
@@ -124,6 +164,17 @@ public class PatternSyncService {
         }
     }
 
+    /**
+     * Pulls the latest changes from a Git repository.
+     *
+     * <p>Updates an existing repository with the latest changes from the remote. Supports the same
+     * authentication methods as cloning operations.
+     *
+     * @param repoPath the local path of the existing repository
+     * @param repo the repository configuration for authentication
+     * @param credentials optional authentication credentials
+     * @throws RuntimeException if the Git pull operation fails
+     */
     private void pullRepository(Path repoPath, PatternRepository repo, String credentials) {
         try {
             log.info("Pulling latest changes for repository at {}", repoPath);
@@ -165,6 +216,15 @@ public class PatternSyncService {
         }
     }
 
+    /**
+     * Validates that a repository contains expected pattern files.
+     *
+     * <p>Performs basic validation by counting YAML files in the repository and logging warnings if
+     * no pattern files are found. This helps identify repositories that may be misconfigured or
+     * missing pattern definitions.
+     *
+     * @param repoPath the path to the repository to validate
+     */
     private void validatePatterns(Path repoPath) {
         try {
             try (Stream<Path> files = Files.walk(repoPath)) {

@@ -18,6 +18,13 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Kubernetes operator reconciler for managing PatternLibrary Custom Resources.
+ *
+ * <p>Reconciles PatternLibrary resources by synchronizing pattern definitions from external Git
+ * repositories, managing refresh schedules, and tracking available pattern libraries for use by log
+ * parsing services.
+ */
 @ControllerConfiguration
 @ApplicationScoped
 public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
@@ -28,18 +35,28 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
 
     @Inject PatternSyncService patternSyncService;
 
+    /**
+     * Reconciles a PatternLibrary resource by synchronizing configured repositories.
+     *
+     * <p>Checks if synchronization is needed based on the refresh interval, syncs all configured
+     * repositories, discovers available pattern libraries, and schedules the next reconciliation.
+     *
+     * @param resource the PatternLibrary resource being reconciled
+     * @param context the reconciliation context containing additional information
+     * @return an UpdateControl indicating the desired reconciliation outcome
+     */
     @Override
     public UpdateControl<PatternLibrary> reconcile(
             PatternLibrary resource, Context<PatternLibrary> context) {
         log.info("Reconciling PatternLibrary: {}", resource.getMetadata().getName());
 
-        // Initialize status if not present
+        // init status if not present
         if (resource.getStatus() == null) {
             resource.setStatus(new PatternLibraryStatus());
         }
 
         try {
-            // Check if sync is needed based on refresh interval
+            // check if sync is needed based on refresh interval
             if (!needsSync(resource)) {
                 log.debug(
                         "PatternLibrary {} does not need sync yet",
@@ -48,11 +65,9 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
             }
 
             log.info("Sync triggered for PatternLibrary: {}", resource.getMetadata().getName());
-
-            // Update status to syncing
             updatePatternLibraryStatus(resource, "Syncing", "Synchronizing pattern repositories");
 
-            // Sync each configured repository
+            // sync each configured repository
             List<PatternRepository> repositories = resource.getSpec().getRepositories();
             if (repositories != null) {
                 for (PatternRepository repo : repositories) {
@@ -60,11 +75,10 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                 }
             }
 
-            // Discover available libraries from synced repositories
+            // discover available libraries from synced repositories
             List<String> availableLibraries =
                     patternSyncService.getAvailableLibraries(resource.getMetadata().getName());
 
-            // Update status with available libraries and sync time
             resource.getStatus().setAvailableLibraries(availableLibraries);
             resource.getStatus().setLastSyncTime(Instant.now());
 
@@ -76,7 +90,7 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                             repositories != null ? repositories.size() : 0,
                             availableLibraries.size()));
 
-            // Schedule next reconciliation based on refresh interval
+            // schedule next reconciliation based on refresh interval
             return UpdateControl.patchStatus(resource)
                     .rescheduleAfter(getRefreshInterval(resource), TimeUnit.SECONDS);
 
@@ -88,6 +102,15 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
         }
     }
 
+    /**
+     * Synchronizes a single pattern repository with authentication support.
+     *
+     * <p>Handles credential extraction from Kubernetes secrets and delegates the actual Git
+     * operations to the PatternSyncService.
+     *
+     * @param resource the PatternLibrary resource being synced
+     * @param repo the repository configuration to synchronize
+     */
     private void syncRepository(PatternLibrary resource, PatternRepository repo) {
         try {
             log.info(
@@ -95,16 +118,13 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                     repo.getName(),
                     resource.getMetadata().getName());
 
-            // Get credentials from secret if specified
+            // get creds
             String credentials = null;
             if (repo.getCredentials() != null && repo.getCredentials().getSecretRef() != null) {
                 credentials = getCredentialsFromSecret(repo.getCredentials().getSecretRef());
             }
 
-            // Sync repository using PatternSyncService
             patternSyncService.syncRepository(resource.getMetadata().getName(), repo, credentials);
-
-            // Update repository sync status
             updateRepositoryStatus(resource, repo, "Success", null);
 
         } catch (Exception e) {
@@ -113,9 +133,17 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
         }
     }
 
+    /**
+     * Retrieves Git credentials from a Kubernetes secret.
+     *
+     * <p>Extracts authentication tokens from secret data for accessing private repositories.
+     * Supports base64 encoded secret values.
+     *
+     * @param secretName the name of the secret containing credentials
+     * @return the decoded credentials string, or null if not found
+     */
     private String getCredentialsFromSecret(String secretName) {
         try {
-            // Get secret from the same namespace as PatternLibrary
             var secret =
                     client.secrets()
                             .inNamespace("podmortem-system") // TODO: use resource namespace
@@ -123,9 +151,7 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                             .get();
 
             if (secret != null && secret.getData() != null) {
-                // Return base64 decoded credentials
-                // This is a simplified version - in practice you'd handle username/password
-                // or token-based auth
+                // TODO: Handle different auth types (username/password, tokens, etc.)
                 return new String(secret.getData().get("token"));
             }
         } catch (Exception e) {
@@ -134,6 +160,14 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
         return null;
     }
 
+    /**
+     * Updates the status for a specific repository within the PatternLibrary.
+     *
+     * @param resource the PatternLibrary resource being updated
+     * @param repo the repository that was processed
+     * @param status the sync status (Success/Failed)
+     * @param error optional error message if sync failed
+     */
     private void updateRepositoryStatus(
             PatternLibrary resource, PatternRepository repo, String status, String error) {
         // TODO: Implement repository status tracking in PatternLibraryStatus
@@ -141,6 +175,13 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
         log.info("Repository {} status: {}", repo.getName(), status);
     }
 
+    /**
+     * Updates the overall status of a PatternLibrary resource.
+     *
+     * @param resource the PatternLibrary resource to update
+     * @param phase the current operational phase
+     * @param message a human-readable status message
+     */
     private void updatePatternLibraryStatus(PatternLibrary resource, String phase, String message) {
         PatternLibraryStatus status = resource.getStatus();
         if (status == null) {
@@ -154,7 +195,15 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
         status.setObservedGeneration(resource.getMetadata().getGeneration());
     }
 
-    /** Check if the pattern library needs to be synced based on refresh interval */
+    /**
+     * Determines if the pattern library needs synchronization based on refresh interval.
+     *
+     * <p>Compares the last sync time with the configured refresh interval to determine if it's time
+     * for another synchronization cycle.
+     *
+     * @param library the PatternLibrary resource to check
+     * @return true if synchronization is needed, false otherwise
+     */
     private boolean needsSync(PatternLibrary library) {
         PatternLibraryStatus status = library.getStatus();
 
@@ -164,10 +213,9 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
             return true;
         }
 
-        // Parse refresh interval from spec
         String refreshInterval = library.getSpec().getRefreshInterval();
         if (refreshInterval == null || refreshInterval.trim().isEmpty()) {
-            refreshInterval = "1h"; // Default to 1 hour
+            refreshInterval = "1h";
         }
 
         try {
@@ -192,16 +240,20 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                     refreshInterval,
                     library.getMetadata().getName(),
                     e.getMessage());
-            // Default to 1 hour if parsing fails
             return status.getLastSyncTime().isBefore(Instant.now().minus(Duration.ofHours(1)));
         }
     }
 
-    /** Get the refresh interval in seconds for rescheduling */
+    /**
+     * Gets the refresh interval in seconds for scheduling the next reconciliation.
+     *
+     * @param library the PatternLibrary resource containing the refresh interval
+     * @return the refresh interval in seconds
+     */
     private long getRefreshInterval(PatternLibrary library) {
         String refreshInterval = library.getSpec().getRefreshInterval();
         if (refreshInterval == null || refreshInterval.trim().isEmpty()) {
-            refreshInterval = "1h"; // Default to 1 hour
+            refreshInterval = "1h";
         }
 
         try {
@@ -213,13 +265,21 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
                     refreshInterval,
                     library.getMetadata().getName(),
                     e.getMessage());
-            return 3600; // Default to 1 hour in seconds
+            return 3600;
         }
     }
 
-    /** Parse refresh interval string into Duration */
+    /**
+     * Parses a human-readable refresh interval string into a Duration.
+     *
+     * <p>Supports various time format strings including: - Simple formats: "30s", "5m", "1h", "2d"
+     * - Compound formats: "1h30m", "2h15m"
+     *
+     * @param refreshInterval the interval string to parse
+     * @return a Duration representing the parsed interval
+     * @throws IllegalArgumentException if the format is not recognized
+     */
     private Duration parseRefreshInterval(String refreshInterval) {
-        // Support formats like: 30s, 5m, 1h, 2h30m, 1d
         refreshInterval = refreshInterval.trim().toLowerCase();
 
         if (refreshInterval.matches("\\d+s")) {
@@ -232,7 +292,6 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
             return Duration.ofDays(Long.parseLong(refreshInterval.replaceAll("d", "")));
         }
 
-        // Support compound formats like "1h30m"
         if (refreshInterval.matches("\\d+h\\d+m")) {
             String[] parts = refreshInterval.split("h");
             long hours = Long.parseLong(parts[0]);
@@ -240,7 +299,6 @@ public class PatternLibraryReconciler implements Reconciler<PatternLibrary> {
             return Duration.ofHours(hours).plusMinutes(minutes);
         }
 
-        // Default to 1 hour if format is not recognized
         log.warn(
                 "Unrecognized refresh interval format: '{}', defaulting to 1 hour",
                 refreshInterval);

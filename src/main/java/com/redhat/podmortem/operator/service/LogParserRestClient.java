@@ -11,6 +11,13 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
+/**
+ * REST client interface for communicating with the Log Parser service.
+ *
+ * <p>Provides reactive endpoints for submitting pod failure data to the log parser for pattern
+ * analysis and failure detection. Uses Quarkus REST Client with Mutiny for non-blocking log
+ * analysis operations.
+ */
 @ApplicationScoped
 @RegisterRestClient(configKey = "log-parser")
 @Path("/")
@@ -18,6 +25,15 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 @Consumes(MediaType.APPLICATION_JSON)
 public interface LogParserRestClient {
 
+    /**
+     * Submits pod failure data for log pattern analysis.
+     *
+     * <p>Processes comprehensive pod failure information including logs, events, and metadata to
+     * identify failure patterns and calculate confidence scores.
+     *
+     * @param failureData the complete pod failure data containing logs and diagnostic information
+     * @return a Uni that emits the analysis results with matched patterns and scores
+     */
     @POST
     @Path("/parse")
     Uni<AnalysisResult> parseLogs(PodFailureData failureData);
