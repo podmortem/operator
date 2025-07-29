@@ -1,4 +1,4 @@
-name: Cleanup Old Development Images
+name: Cleanup Container Images
 
 on:
   schedule:
@@ -15,13 +15,24 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Delete old development images
+      - name: Delete old images
         uses: actions/delete-package-versions@v5
         with:
           owner: podmortem
           package-name: ${{ env.IMAGE_NAME }}
           package-type: 'container'
-          min-versions-to-keep: 20
-          # Ignore release tags (v1.2.3 pattern), latest, and deps-cache
-          ignore-versions: '^(v\d+\.\d+\.\d+.*|latest|deps-cache)$'
+          min-versions-to-keep: 1
+          delete-only-untagged-versions: false
+          # Keep only: release tags (v1.2.3), latest-dev, latest, and deps-cache
+          ignore-versions: '^(v\d+\.\d+\.\d+.*|latest-dev|latest|deps-cache)$'
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Delete untagged images
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: podmortem
+          package-name: ${{ env.IMAGE_NAME }}
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: true
           token: ${{ secrets.GITHUB_TOKEN }}
