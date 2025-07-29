@@ -11,7 +11,7 @@ on:
 jobs:
   warm-cache:
     name: Warm Dependencies Cache
-    runs-on: self-hosted
+    runs-on: [self-hosted, amd64]
     permissions:
       contents: read
       packages: write
@@ -53,7 +53,7 @@ jobs:
     name: Test Build
     if: github.event_name == 'pull_request'
     needs: warm-cache
-    runs-on: self-hosted
+    runs-on: [self-hosted, amd64]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -81,18 +81,19 @@ jobs:
     name: Build ${{ matrix.arch }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: warm-cache
-    runs-on: self-hosted
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     strategy:
       matrix:
-        arch: [amd64, arm64]
         include:
           - arch: amd64
             platform: linux/amd64
+            runner: [self-hosted, amd64]
           - arch: arm64
             platform: linux/arm64
+            runner: ubuntu-22.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -129,7 +130,7 @@ jobs:
     name: Create Multi-Arch Manifest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build-arch
-    runs-on: self-hosted
+    runs-on: [self-hosted, amd64]
     permissions:
       contents: read
       packages: write
