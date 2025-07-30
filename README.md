@@ -1,6 +1,7 @@
 # operator
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=podmortem_operator&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=podmortem_operator)
 
-A Quarkus-based Kubernetes operator for managing pod failure analysis in the Podmortem operator.
+> A Quarkus-based Kubernetes operator for managing pod failure analysis in the Podmortem operator.
 
 ## Overview
 
