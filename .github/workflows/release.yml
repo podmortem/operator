@@ -104,7 +104,7 @@ jobs:
     permissions: {contents: write}
     steps:
       - name: Generate GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
