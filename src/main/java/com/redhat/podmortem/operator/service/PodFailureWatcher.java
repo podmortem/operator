@@ -49,8 +49,8 @@ public class PodFailureWatcher {
     private final Map<String, Instant> processedFailures = new ConcurrentHashMap<>();
 
     // Optional list of namespaces to watch; if empty, watch all namespaces and filter in handler
-    @ConfigProperty(name = "podmortem.watch.namespaces", defaultValue = "")
-    String watchNamespacesProperty;
+    @ConfigProperty(name = "podmortem.watch.namespaces")
+    Optional<String> watchNamespacesProperty;
 
     private Set<String> allowedNamespaces = Set.of();
     private final List<Watch> activeWatches = new CopyOnWriteArrayList<>();
@@ -65,9 +65,10 @@ public class PodFailureWatcher {
     public void onStartup(@Observes StartupEvent event) {
         log.info("Starting real-time pod failure watcher");
         // Parse configured namespaces (comma-separated)
-        if (watchNamespacesProperty != null && !watchNamespacesProperty.isBlank()) {
+        String namespaces = watchNamespacesProperty.orElse("");
+        if (!namespaces.isBlank()) {
             allowedNamespaces =
-                    Arrays.stream(watchNamespacesProperty.split(","))
+                    Arrays.stream(namespaces.split(","))
                             .map(String::trim)
                             .filter(s -> !s.isEmpty())
                             .collect(java.util.stream.Collectors.toSet());
