@@ -8,6 +8,7 @@ import com.redhat.podmortem.common.model.kube.podmortem.PodmortemStatus;
 import io.fabric8.kubernetes.api.model.Event;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.Watch;
 import io.fabric8.kubernetes.client.Watcher;
 import io.fabric8.kubernetes.client.WatcherException;
 import io.quarkus.runtime.StartupEvent;
@@ -15,10 +16,15 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,9 +43,17 @@ public class PodFailureWatcher {
     @Inject KubernetesClient client;
     @Inject LogParserClient logParserClient;
     @Inject AIInterfaceClient aiInterfaceClient;
+    @Inject EventService eventService;
 
     // track processed failures
     private final Map<String, Instant> processedFailures = new ConcurrentHashMap<>();
+
+    // Optional list of namespaces to watch; if empty, watch all namespaces and filter in handler
+    @ConfigProperty(name = "podmortem.watch.namespaces", defaultValue = "")
+    String watchNamespacesProperty;
+
+    private Set<String> allowedNamespaces = Set.of();
+    private final List<Watch> activeWatches = new CopyOnWriteArrayList<>();
 
     /**
      * Initializes the pod failure watcher on application startup.
@@ -50,6 +64,18 @@ public class PodFailureWatcher {
      */
     public void onStartup(@Observes StartupEvent event) {
         log.info("Starting real-time pod failure watcher");
+        // Parse configured namespaces (comma-separated)
+        if (watchNamespacesProperty != null && !watchNamespacesProperty.isBlank()) {
+            allowedNamespaces =
+                    Arrays.stream(watchNamespacesProperty.split(","))
+                            .map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .collect(java.util.stream.Collectors.toSet());
+            log.info("Configured to watch namespaces: {}", allowedNamespaces);
+        } else {
+            allowedNamespaces = Set.of();
+            log.info("Configured to watch all namespaces (no namespace filter set)");
+        }
         startPodWatcher();
     }
 
@@ -60,41 +86,55 @@ public class PodFailureWatcher {
      * indicate failures. Includes automatic recovery logic for watch connection failures.
      */
     private void startPodWatcher() {
-        // TODO: only monitor pods that podmortem is configured to monitor
-        client.pods()
-                .inAnyNamespace()
-                .watch(
-                        new Watcher<Pod>() {
-                            @Override
-                            public void eventReceived(Action action, Pod pod) {
-                                try {
-                                    // only process MODIFIED events where pod has failed
-                                    if (action == Action.MODIFIED && hasPodFailed(pod)) {
-                                        handlePodFailure(pod);
-                                    }
-                                } catch (Exception e) {
-                                    log.error(
-                                            "Error processing pod event for {}: {}",
-                                            pod.getMetadata().getName(),
-                                            e.getMessage(),
-                                            e);
-                                }
-                            }
+        // Create watchers per namespace if configured; else a single all-namespaces watcher
+        List<String> targetNamespaces = new ArrayList<>(allowedNamespaces);
+        if (targetNamespaces.isEmpty()) {
+            Watch watch = client.pods().inAnyNamespace().watch(createWatcher());
+            activeWatches.add(watch);
+        } else {
+            for (String ns : targetNamespaces) {
+                Watch watch = client.pods().inNamespace(ns).watch(createWatcher());
+                activeWatches.add(watch);
+            }
+        }
+    }
 
-                            @Override
-                            public void onClose(WatcherException cause) {
-                                if (cause != null) {
-                                    log.error(
-                                            "Pod watcher closed due to error: {}",
-                                            cause.getMessage(),
-                                            cause);
-                                    // restart the watcher after a delay
-                                    restartWatcher();
-                                } else {
-                                    log.info("Pod watcher closed normally");
-                                }
-                            }
-                        });
+    private Watcher<Pod> createWatcher() {
+        return new Watcher<Pod>() {
+            @Override
+            public void eventReceived(Action action, Pod pod) {
+                try {
+                    if (action != Action.MODIFIED) {
+                        return;
+                    }
+                    // Namespace filter if watching all namespaces but want to limit
+                    if (!allowedNamespaces.isEmpty()
+                            && !allowedNamespaces.contains(pod.getMetadata().getNamespace())) {
+                        return;
+                    }
+                    if (hasPodFailed(pod)) {
+                        handlePodFailure(pod);
+                    }
+                } catch (Exception e) {
+                    log.error(
+                            "Error processing pod event for {}: {}",
+                            pod.getMetadata().getName(),
+                            e.getMessage(),
+                            e);
+                }
+            }
+
+            @Override
+            public void onClose(WatcherException cause) {
+                if (cause != null) {
+                    log.error("Pod watcher closed due to error: {}", cause.getMessage(), cause);
+                    // restart the watcher after a delay
+                    restartWatcher();
+                } else {
+                    log.info("Pod watcher closed normally");
+                }
+            }
+        };
     }
 
     /**
@@ -130,6 +170,14 @@ public class PodFailureWatcher {
     private void handlePodFailure(Pod pod) {
         String podKey = pod.getMetadata().getNamespace() + "/" + pod.getMetadata().getName();
 
+        // find matching Podmortem resources first; if none, ignore silently
+        List<Podmortem> podmortemResources = findMatchingPodmortemResources(pod);
+        if (podmortemResources.isEmpty()) {
+            // Unmonitored pod; do not log at info level to avoid noise
+            log.debug("Ignoring failure for unmonitored pod: {}", podKey);
+            return;
+        }
+
         // check if we've already processed this failure
         Instant failureTime = getFailureTime(pod);
         if (failureTime != null && processedFailures.containsKey(podKey)) {
@@ -140,17 +188,15 @@ public class PodFailureWatcher {
             }
         }
 
-        log.info("Pod failure detected: {}", podKey);
+        log.info("Pod failure detected: {} ({} monitors)", podKey, podmortemResources.size());
 
         // mark as processed
         if (failureTime != null) {
             processedFailures.put(podKey, failureTime);
         }
 
-        // find matching Podmortem resources
-        List<Podmortem> podmortemResources = findMatchingPodmortemResources(pod);
-
         for (Podmortem podmortem : podmortemResources) {
+            eventService.emitFailureDetected(pod, podmortem);
             processPodFailureForPodmortem(podmortem, pod);
         }
     }
@@ -243,7 +289,7 @@ public class PodFailureWatcher {
                     .subscribe()
                     .with(
                             analysisResult -> {
-                                log.info(
+                                log.debug(
                                         "Log analysis completed for pod: {}",
                                         pod.getMetadata().getName());
                                 handleAnalysisResult(podmortem, pod, analysisResult);
@@ -255,11 +301,14 @@ public class PodFailureWatcher {
                                         failure);
                                 updatePodFailureStatusAsync(
                                         podmortem, pod, "Analysis failed: " + failure.getMessage());
+                                eventService.emitAnalysisError(
+                                        pod, podmortem, "Analysis failed: " + failure.getMessage());
                             });
 
         } catch (Exception e) {
             log.error("Error processing pod failure for pod: {}", pod.getMetadata().getName(), e);
             updatePodFailureStatusAsync(podmortem, pod, "Processing failed: " + e.getMessage());
+            eventService.emitAnalysisError(pod, podmortem, "Processing failed: " + e.getMessage());
         }
     }
 
@@ -288,7 +337,7 @@ public class PodFailureWatcher {
     }
 
     /**
-     * Handles analysis results from the log parser and optionally requests AI explanation.
+     * Handles analysis results from the log parser and optionally requests AI analysis text.
      *
      * <p>Based on the Podmortem configuration, either completes with pattern analysis only or
      * forwards results to the AI interface for explanation generation.
@@ -298,7 +347,7 @@ public class PodFailureWatcher {
      * @param analysisResult the pattern analysis results from log parsing
      */
     private void handleAnalysisResult(Podmortem podmortem, Pod pod, AnalysisResult analysisResult) {
-        log.info("Handling analysis result for pod: {}", pod.getMetadata().getName());
+        log.debug("Handling analysis result for pod: {}", pod.getMetadata().getName());
 
         if (Boolean.TRUE.equals(podmortem.getSpec().getAiAnalysisEnabled())
                 && podmortem.getSpec().getAiProviderRef() != null) {
@@ -313,7 +362,7 @@ public class PodFailureWatcher {
                                             .subscribe()
                                             .with(
                                                     aiResponse -> {
-                                                        log.info(
+                                                        log.debug(
                                                                 "AI analysis completed for pod: {}",
                                                                 pod.getMetadata().getName());
                                                         updatePodFailureStatusAsync(
@@ -322,6 +371,11 @@ public class PodFailureWatcher {
                                                                 "Analysis completed with AI: "
                                                                         + aiResponse
                                                                                 .getExplanation());
+                                                        eventService.emitAnalysisComplete(
+                                                                pod,
+                                                                podmortem,
+                                                                analysisResult,
+                                                                aiResponse.getExplanation());
                                                     },
                                                     failure -> {
                                                         log.error(
@@ -333,12 +387,28 @@ public class PodFailureWatcher {
                                                                 pod,
                                                                 "Pattern analysis completed, AI failed: "
                                                                         + failure.getMessage());
+                                                        eventService.emitAnalysisComplete(
+                                                                pod,
+                                                                podmortem,
+                                                                analysisResult,
+                                                                "AI failed: "
+                                                                        + failure.getMessage());
+                                                        eventService.emitAnalysisError(
+                                                                pod,
+                                                                podmortem,
+                                                                "AI analysis failed: "
+                                                                        + failure.getMessage());
                                                     });
                                 } else {
                                     updatePodFailureStatusAsync(
                                             podmortem,
                                             pod,
                                             "Analysis completed, AI provider not found");
+                                    eventService.emitAnalysisComplete(
+                                            pod,
+                                            podmortem,
+                                            analysisResult,
+                                            "AI provider not found");
                                 }
                             },
                             failure -> {
@@ -350,9 +420,15 @@ public class PodFailureWatcher {
                                         podmortem,
                                         pod,
                                         "Analysis completed, AI provider lookup failed");
+                                eventService.emitAnalysisComplete(
+                                        pod,
+                                        podmortem,
+                                        analysisResult,
+                                        "AI provider lookup failed");
                             });
         } else {
             updatePodFailureStatusAsync(podmortem, pod, "Pattern analysis completed (AI disabled)");
+            eventService.emitAnalysisComplete(pod, podmortem, analysisResult, "AI disabled");
         }
     }
 
@@ -382,7 +458,7 @@ public class PodFailureWatcher {
                                 podmortem.getStatus().setPhase("Processing");
 
                                 client.resource(podmortem).patchStatus();
-                                log.info(
+                                log.debug(
                                         "Updated status for pod {}: {}",
                                         pod.getMetadata().getName(),
                                         message);
@@ -474,6 +550,15 @@ public class PodFailureWatcher {
 
     /** Restarts the pod watcher after a connection failure. */
     private void restartWatcher() {
+        // Close existing watches before restarting
+        for (Watch w : activeWatches) {
+            try {
+                w.close();
+            } catch (Exception ignored) {
+            }
+        }
+        activeWatches.clear();
+
         new Thread(
                         () -> {
                             try {
