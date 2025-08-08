@@ -37,6 +37,7 @@ public class PodFailureWatcher {
     @Inject KubernetesClient client;
     @Inject LogParserClient logParserClient;
     @Inject AIInterfaceClient aiInterfaceClient;
+    @Inject EventService eventService;
 
     // track processed failures
     private final Map<String, Instant> processedFailures = new ConcurrentHashMap<>();
@@ -151,6 +152,7 @@ public class PodFailureWatcher {
         List<Podmortem> podmortemResources = findMatchingPodmortemResources(pod);
 
         for (Podmortem podmortem : podmortemResources) {
+            eventService.emitFailureDetected(pod, podmortem);
             processPodFailureForPodmortem(podmortem, pod);
         }
     }
@@ -243,7 +245,7 @@ public class PodFailureWatcher {
                     .subscribe()
                     .with(
                             analysisResult -> {
-                                log.info(
+                                log.debug(
                                         "Log analysis completed for pod: {}",
                                         pod.getMetadata().getName());
                                 handleAnalysisResult(podmortem, pod, analysisResult);
@@ -255,11 +257,14 @@ public class PodFailureWatcher {
                                         failure);
                                 updatePodFailureStatusAsync(
                                         podmortem, pod, "Analysis failed: " + failure.getMessage());
+                                eventService.emitAnalysisError(
+                                        pod, podmortem, "Analysis failed: " + failure.getMessage());
                             });
 
         } catch (Exception e) {
             log.error("Error processing pod failure for pod: {}", pod.getMetadata().getName(), e);
             updatePodFailureStatusAsync(podmortem, pod, "Processing failed: " + e.getMessage());
+            eventService.emitAnalysisError(pod, podmortem, "Processing failed: " + e.getMessage());
         }
     }
 
@@ -288,7 +293,7 @@ public class PodFailureWatcher {
     }
 
     /**
-     * Handles analysis results from the log parser and optionally requests AI explanation.
+     * Handles analysis results from the log parser and optionally requests AI analysis text.
      *
      * <p>Based on the Podmortem configuration, either completes with pattern analysis only or
      * forwards results to the AI interface for explanation generation.
@@ -298,7 +303,7 @@ public class PodFailureWatcher {
      * @param analysisResult the pattern analysis results from log parsing
      */
     private void handleAnalysisResult(Podmortem podmortem, Pod pod, AnalysisResult analysisResult) {
-        log.info("Handling analysis result for pod: {}", pod.getMetadata().getName());
+        log.debug("Handling analysis result for pod: {}", pod.getMetadata().getName());
 
         if (Boolean.TRUE.equals(podmortem.getSpec().getAiAnalysisEnabled())
                 && podmortem.getSpec().getAiProviderRef() != null) {
@@ -313,7 +318,7 @@ public class PodFailureWatcher {
                                             .subscribe()
                                             .with(
                                                     aiResponse -> {
-                                                        log.info(
+                                                        log.debug(
                                                                 "AI analysis completed for pod: {}",
                                                                 pod.getMetadata().getName());
                                                         updatePodFailureStatusAsync(
@@ -322,6 +327,11 @@ public class PodFailureWatcher {
                                                                 "Analysis completed with AI: "
                                                                         + aiResponse
                                                                                 .getExplanation());
+                                                        eventService.emitAnalysisComplete(
+                                                                pod,
+                                                                podmortem,
+                                                                analysisResult,
+                                                                aiResponse.getExplanation());
                                                     },
                                                     failure -> {
                                                         log.error(
@@ -333,12 +343,28 @@ public class PodFailureWatcher {
                                                                 pod,
                                                                 "Pattern analysis completed, AI failed: "
                                                                         + failure.getMessage());
+                                                        eventService.emitAnalysisComplete(
+                                                                pod,
+                                                                podmortem,
+                                                                analysisResult,
+                                                                "AI failed: "
+                                                                        + failure.getMessage());
+                                                        eventService.emitAnalysisError(
+                                                                pod,
+                                                                podmortem,
+                                                                "AI analysis failed: "
+                                                                        + failure.getMessage());
                                                     });
                                 } else {
                                     updatePodFailureStatusAsync(
                                             podmortem,
                                             pod,
                                             "Analysis completed, AI provider not found");
+                                    eventService.emitAnalysisComplete(
+                                            pod,
+                                            podmortem,
+                                            analysisResult,
+                                            "AI provider not found");
                                 }
                             },
                             failure -> {
@@ -350,9 +376,15 @@ public class PodFailureWatcher {
                                         podmortem,
                                         pod,
                                         "Analysis completed, AI provider lookup failed");
+                                eventService.emitAnalysisComplete(
+                                        pod,
+                                        podmortem,
+                                        analysisResult,
+                                        "AI provider lookup failed");
                             });
         } else {
             updatePodFailureStatusAsync(podmortem, pod, "Pattern analysis completed (AI disabled)");
+            eventService.emitAnalysisComplete(pod, podmortem, analysisResult, "AI disabled");
         }
     }
 
@@ -382,7 +414,7 @@ public class PodFailureWatcher {
                                 podmortem.getStatus().setPhase("Processing");
 
                                 client.resource(podmortem).patchStatus();
-                                log.info(
+                                log.debug(
                                         "Updated status for pod {}: {}",
                                         pod.getMetadata().getName(),
                                         message);

@@ -8,6 +8,7 @@ import com.redhat.podmortem.common.model.kube.podmortem.PodFailureData;
 import com.redhat.podmortem.common.model.kube.podmortem.Podmortem;
 import com.redhat.podmortem.common.model.kube.podmortem.PodmortemStatus;
 import com.redhat.podmortem.operator.service.AIInterfaceClient;
+import com.redhat.podmortem.operator.service.EventService;
 import com.redhat.podmortem.operator.service.LogParserClient;
 import io.fabric8.kubernetes.api.model.Event;
 import io.fabric8.kubernetes.api.model.Pod;
@@ -42,6 +43,8 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
     @Inject LogParserClient logParserClient;
 
     @Inject AIInterfaceClient aiInterfaceClient;
+
+    @Inject EventService eventService;
 
     private final ObjectMapper objectMapper;
 
@@ -132,6 +135,7 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
      */
     private void processPodFailure(Podmortem resource, Pod pod) {
         log.info("Processing pod failure for pod: {}", pod.getMetadata().getName());
+        eventService.emitFailureDetected(pod, resource);
 
         try {
             PodFailureData failureData = collectPodFailureData(pod);
@@ -141,7 +145,7 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                     .subscribe()
                     .with(
                             analysisResult -> {
-                                log.info(
+                                log.debug(
                                         "Log analysis completed for pod: {}",
                                         pod.getMetadata().getName());
                                 handleAnalysisResult(resource, pod, analysisResult);
@@ -153,11 +157,14 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                                         failure);
                                 updatePodFailureStatus(
                                         resource, pod, "Analysis failed: " + failure.getMessage());
+                                eventService.emitAnalysisError(
+                                        pod, resource, "Analysis failed: " + failure.getMessage());
                             });
 
         } catch (Exception e) {
             log.error("Error processing pod failure for pod: {}", pod.getMetadata().getName(), e);
             updatePodFailureStatus(resource, pod, "Processing failed: " + e.getMessage());
+            eventService.emitAnalysisError(pod, resource, "Processing failed: " + e.getMessage());
         }
     }
 
@@ -186,7 +193,7 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
     }
 
     /**
-     * Handles analysis results from the log parser and optionally requests AI explanation.
+     * Handles analysis results from the log parser and optionally requests AI analysis text.
      *
      * <p>If AI analysis is enabled and an AI provider is configured, forwards the analysis results
      * to the AI interface for explanation generation. Otherwise, updates the status to indicate
@@ -197,7 +204,7 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
      * @param analysisResult the pattern analysis results from the log parser
      */
     private void handleAnalysisResult(Podmortem resource, Pod pod, AnalysisResult analysisResult) {
-        log.info("Handling analysis result for pod: {}", pod.getMetadata().getName());
+        log.debug("Handling analysis result for pod: {}", pod.getMetadata().getName());
 
         if (Boolean.TRUE.equals(resource.getSpec().getAiAnalysisEnabled())
                 && resource.getSpec().getAiProviderRef() != null) {
@@ -212,15 +219,20 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                                             .subscribe()
                                             .with(
                                                     aiResponse -> {
-                                                        log.info(
+                                                        log.debug(
                                                                 "AI analysis completed for pod: {}",
                                                                 pod.getMetadata().getName());
                                                         updatePodFailureStatus(
                                                                 resource,
                                                                 pod,
-                                                                "Analysis completed with AI explanation: "
+                                                                "Analysis completed with AI analysis: "
                                                                         + aiResponse
                                                                                 .getExplanation());
+                                                        eventService.emitAnalysisComplete(
+                                                                pod,
+                                                                resource,
+                                                                analysisResult,
+                                                                aiResponse.getExplanation());
                                                     },
                                                     failure -> {
                                                         log.error(
@@ -232,6 +244,17 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                                                                 pod,
                                                                 "Pattern analysis completed, AI analysis failed: "
                                                                         + failure.getMessage());
+                                                        eventService.emitAnalysisComplete(
+                                                                pod,
+                                                                resource,
+                                                                analysisResult,
+                                                                "AI analysis failed: "
+                                                                        + failure.getMessage());
+                                                        eventService.emitAnalysisError(
+                                                                pod,
+                                                                resource,
+                                                                "AI analysis failed: "
+                                                                        + failure.getMessage());
                                                     });
                                 } else {
                                     log.warn(
@@ -241,6 +264,8 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                                             resource,
                                             pod,
                                             "Pattern analysis completed, AI provider not found");
+                                    eventService.emitAnalysisComplete(
+                                            pod, resource, analysisResult, "AI provider not found");
                                 }
                             },
                             failure -> {
@@ -252,9 +277,12 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
                                         resource,
                                         pod,
                                         "Pattern analysis completed, AI provider lookup failed");
+                                eventService.emitAnalysisComplete(
+                                        pod, resource, analysisResult, "AI provider lookup failed");
                             });
         } else {
             updatePodFailureStatus(resource, pod, "Pattern analysis completed");
+            eventService.emitAnalysisComplete(pod, resource, analysisResult, "AI disabled");
         }
     }
 
@@ -345,8 +373,7 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
      * @param message the status message for this pod failure
      */
     private void updatePodFailureStatus(Podmortem resource, Pod pod, String message) {
-        log.info("Updated status for pod {}: {}", pod.getMetadata().getName(), message);
-        // TODO: Implement per-pod failure status tracking instead of overall status
+        log.debug("Updated status for pod {}: {}", pod.getMetadata().getName(), message);
         updatePodmortemStatus(
                 resource,
                 "Processing",
