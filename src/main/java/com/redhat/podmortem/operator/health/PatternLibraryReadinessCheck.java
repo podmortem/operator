@@ -40,6 +40,8 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
                 return HealthCheckResponse.named("pattern-library-sync").up().build();
             }
 
+            log.debug("Found {} PatternLibrary resources", libraries.size());
+
             if (startupTime.plus(MAX_WAIT_MINUTES, ChronoUnit.MINUTES).isBefore(Instant.now())) {
                 log.warn("Pattern library sync grace period exceeded, reporting ready anyway");
                 return HealthCheckResponse.named("pattern-library-sync").up().build();
@@ -52,13 +54,16 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
             }
 
             boolean hasPatterns = false;
-            try (var stream = Files.list(cacheDir)) {
-                hasPatterns =
+            long patternCount = 0;
+            try (var stream = Files.walk(cacheDir)) {
+                patternCount =
                         stream.filter(Files::isRegularFile)
-                                .anyMatch(
+                                .filter(
                                         path ->
                                                 path.toString().endsWith(".yml")
-                                                        || path.toString().endsWith(".yaml"));
+                                                        || path.toString().endsWith(".yaml"))
+                                .count();
+                hasPatterns = patternCount > 0;
             }
 
             if (!hasPatterns) {
@@ -66,17 +71,43 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
                 return HealthCheckResponse.named("pattern-library-sync").down().build();
             }
 
+            log.debug("Found {} pattern files in cache directory", patternCount);
+
             boolean hasSuccessfulSync =
                     libraries.stream()
                             .anyMatch(
-                                    lib ->
-                                            lib.getStatus() != null
-                                                    && "Ready"
-                                                            .equalsIgnoreCase(
-                                                                    lib.getStatus().getPhase()));
+                                    lib -> {
+                                        if (lib.getStatus() == null) {
+                                            log.trace(
+                                                    "PatternLibrary {} has null status",
+                                                    lib.getMetadata().getName());
+                                            return false;
+                                        }
+                                        String phase = lib.getStatus().getPhase();
+                                        log.trace(
+                                                "PatternLibrary {} has phase: {}",
+                                                lib.getMetadata().getName(),
+                                                phase);
+                                        // Accept either "Ready" or "Success" as valid states
+                                        return "Ready".equalsIgnoreCase(phase)
+                                                || "Success".equalsIgnoreCase(phase);
+                                    });
 
             if (!hasSuccessfulSync) {
                 log.debug("No PatternLibrary has successful sync status");
+                libraries.forEach(
+                        lib -> {
+                            if (lib.getStatus() != null) {
+                                log.debug(
+                                        "PatternLibrary {} status: phase={}",
+                                        lib.getMetadata().getName(),
+                                        lib.getStatus().getPhase());
+                            } else {
+                                log.debug(
+                                        "PatternLibrary {} has null status",
+                                        lib.getMetadata().getName());
+                            }
+                        });
                 return HealthCheckResponse.named("pattern-library-sync").down().build();
             }
 
