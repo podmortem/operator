@@ -12,6 +12,8 @@ import io.fabric8.kubernetes.api.model.apps.ReplicaSet;
 import io.fabric8.kubernetes.api.model.events.v1.Event;
 import io.fabric8.kubernetes.api.model.events.v1.EventBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
@@ -43,11 +45,11 @@ public class EventService {
     public void emitFailureDetected(Pod pod, Podmortem monitor) {
         String reason = "PodFailureDetected";
         String message = "Pod failure detected and queued for analysis";
-        emitForTargets(pod, monitor, reason, message, "Warning");
+        emitForTargetsAsync(pod, monitor, reason, message, "Warning");
         findOwningDeployment(pod)
                 .ifPresent(
                         deployment ->
-                                emit(
+                                emitAsync(
                                         deployment,
                                         pod.getMetadata().getNamespace(),
                                         reason,
@@ -74,20 +76,26 @@ public class EventService {
                 result.getSummary() != null ? result.getSummary().getHighestSeverity() : null;
         int significant =
                 result.getSummary() != null ? result.getSummary().getSignificantEvents() : 0;
-        String message =
+
+        // events have a 1024 byte limit for the message field
+        String baseMessage =
                 String.format(
-                                "Analysis complete. HighestSeverity=%s, SignificantEvents=%d",
-                                highestSeverity, significant)
-                        + (detail != null && !detail.isBlank()
-                                ? " | " + truncate(detail, 900)
-                                : "");
+                        "Analysis complete. Severity=%s, Events=%d", highestSeverity, significant);
+
+        String message;
+        if (detail != null && !detail.isBlank()) {
+            int maxDetailLength = 850 - baseMessage.length();
+            message = baseMessage + " | " + truncate(detail, maxDetailLength);
+        } else {
+            message = baseMessage;
+        }
 
         String reason = "PodmortemAnalysisComplete";
-        emitForTargets(pod, monitor, reason, message, "Normal");
+        emitForTargetsAsync(pod, monitor, reason, message, "Normal");
         findOwningDeployment(pod)
                 .ifPresent(
                         deployment ->
-                                emit(
+                                emitAsync(
                                         deployment,
                                         pod.getMetadata().getNamespace(),
                                         reason,
@@ -107,11 +115,11 @@ public class EventService {
     public void emitAnalysisError(Pod pod, Podmortem monitor, String errorMessage) {
         String reason = "PodmortemAnalysisError";
         String message = truncate(errorMessage, 900);
-        emitForTargets(pod, monitor, reason, message, "Warning");
+        emitForTargetsAsync(pod, monitor, reason, message, "Warning");
         findOwningDeployment(pod)
                 .ifPresent(
                         deployment ->
-                                emit(
+                                emitAsync(
                                         deployment,
                                         pod.getMetadata().getNamespace(),
                                         reason,
@@ -120,7 +128,8 @@ public class EventService {
     }
 
     /**
-     * Emits a single event to both primary targets: the pod and the Podmortem resource.
+     * Emits events asynchronously to both primary targets: the pod and the Podmortem resource. This
+     * avoids blocking the event loop thread.
      *
      * @param pod the pod target
      * @param monitor the Podmortem CR target
@@ -128,16 +137,17 @@ public class EventService {
      * @param message the human-readable message
      * @param type the event type (for example, "Normal" or "Warning")
      */
-    private void emitForTargets(
+    private void emitForTargetsAsync(
             Pod pod, Podmortem monitor, String reason, String message, String type) {
         // Pod
-        emit(pod, pod.getMetadata().getNamespace(), reason, message, type);
+        emitAsync(pod, pod.getMetadata().getNamespace(), reason, message, type);
         // Monitor CR
-        emit(monitor, monitor.getMetadata().getNamespace(), reason, message, type);
+        emitAsync(monitor, monitor.getMetadata().getNamespace(), reason, message, type);
     }
 
     /**
-     * Emits an event for a specific Kubernetes resource.
+     * Asynchronously emits an event for a specific Kubernetes resource. This avoids blocking the
+     * event loop thread when creating events.
      *
      * @param target the resource the event should be associated with
      * @param namespace the namespace to create the event in
@@ -145,39 +155,64 @@ public class EventService {
      * @param message a human-readable description of the event
      * @param type the event type (for example, "Normal" or "Warning")
      */
-    private void emit(
+    private void emitAsync(
             HasMetadata target, String namespace, String reason, String message, String type) {
-        try {
-            ObjectReference ref = new ObjectReference();
-            ref.setApiVersion(target.getApiVersion());
-            ref.setKind(target.getKind());
-            ref.setName(target.getMetadata().getName());
-            ref.setNamespace(target.getMetadata().getNamespace());
-            ref.setUid(target.getMetadata().getUid());
+        Uni.createFrom()
+                .item(
+                        () -> {
+                            try {
+                                ObjectReference ref = new ObjectReference();
+                                ref.setApiVersion(target.getApiVersion());
+                                ref.setKind(target.getKind());
+                                ref.setName(target.getMetadata().getName());
+                                ref.setNamespace(target.getMetadata().getNamespace());
+                                ref.setUid(target.getMetadata().getUid());
 
-            Event event =
-                    new EventBuilder()
-                            .withNewMetadata()
-                            .withName(generateEventName(target))
-                            .withNamespace(namespace)
-                            .endMetadata()
-                            .withReason(reason)
-                            .withType(type)
-                            .withAction("Report")
-                            .withNote(message)
-                            .withReportingController(REPORTING_CONTROLLER)
-                            .withReportingInstance(REPORTING_CONTROLLER + ".instance")
-                            .withEventTime(
-                                    new MicroTimeBuilder()
-                                            .withTime(Instant.now().toString())
-                                            .build())
-                            .withRegarding(ref)
-                            .build();
+                                Event event =
+                                        new EventBuilder()
+                                                .withNewMetadata()
+                                                .withName(generateEventName(target))
+                                                .withNamespace(namespace)
+                                                .endMetadata()
+                                                .withReason(reason)
+                                                .withType(type)
+                                                .withAction("Report")
+                                                .withNote(message)
+                                                .withReportingController(REPORTING_CONTROLLER)
+                                                .withReportingInstance(
+                                                        REPORTING_CONTROLLER + ".instance")
+                                                .withEventTime(
+                                                        new MicroTimeBuilder()
+                                                                .withTime(Instant.now().toString())
+                                                                .build())
+                                                .withRegarding(ref)
+                                                .build();
 
-            client.events().v1().events().inNamespace(namespace).resource(event).create();
-        } catch (Exception e) {
-            log.debug("Failed to emit event '{}': {}", reason, e.getMessage());
-        }
+                                client.events()
+                                        .v1()
+                                        .events()
+                                        .inNamespace(namespace)
+                                        .resource(event)
+                                        .create();
+                                return event;
+                            } catch (Exception e) {
+                                log.debug("Failed to emit event '{}': {}", reason, e.getMessage());
+                                return null;
+                            }
+                        })
+                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+                .subscribe()
+                .with(
+                        event -> {
+                            if (event != null) {
+                                log.trace("Event emitted: {}", reason);
+                            }
+                        },
+                        failure ->
+                                log.debug(
+                                        "Failed to emit event '{}': {}",
+                                        reason,
+                                        failure.getMessage()));
     }
 
     /**
@@ -233,7 +268,8 @@ public class EventService {
     }
 
     /**
-     * Truncates text to a maximum length, appending an ellipsis when truncated.
+     * Truncates text to a maximum length, appending an ellipsis when truncated. For AI analysis,
+     * tries to preserve the most important parts (Root Cause, Fix).
      *
      * @param text the input text (may be null)
      * @param max the maximum length to retain
@@ -242,6 +278,29 @@ public class EventService {
     private String truncate(String text, int max) {
         if (text == null) return null;
         if (text.length() <= max) return text;
+
+        if (text.contains("Root Cause") && text.contains("Fix")) {
+            int rootCauseIdx = text.indexOf("Root Cause");
+            int fixIdx = text.indexOf("Fix");
+
+            if (rootCauseIdx >= 0 && fixIdx >= 0) {
+                int rootCauseEnd = text.indexOf("Evidence", rootCauseIdx);
+                if (rootCauseEnd < 0) rootCauseEnd = fixIdx;
+                String rootCause =
+                        text.substring(
+                                rootCauseIdx, Math.min(rootCauseEnd, rootCauseIdx + max / 2));
+
+                int fixEnd = Math.min(text.length(), fixIdx + max / 2);
+                String fix = text.substring(fixIdx, fixEnd);
+
+                String combined = rootCause.trim() + " ... " + fix.trim();
+                if (combined.length() > max) {
+                    return combined.substring(0, max - 3) + "...";
+                }
+                return combined;
+            }
+        }
+
         return text.substring(0, max - 3) + "...";
     }
 }

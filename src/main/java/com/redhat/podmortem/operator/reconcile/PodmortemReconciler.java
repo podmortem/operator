@@ -8,6 +8,7 @@ import com.redhat.podmortem.common.model.kube.podmortem.PodFailureData;
 import com.redhat.podmortem.common.model.kube.podmortem.Podmortem;
 import com.redhat.podmortem.common.model.kube.podmortem.PodmortemStatus;
 import com.redhat.podmortem.operator.service.AIInterfaceClient;
+import com.redhat.podmortem.operator.service.AnalysisStorageService;
 import com.redhat.podmortem.operator.service.EventService;
 import com.redhat.podmortem.operator.service.LogParserClient;
 import io.fabric8.kubernetes.api.model.Event;
@@ -45,6 +46,8 @@ public class PodmortemReconciler implements Reconciler<Podmortem> {
     @Inject AIInterfaceClient aiInterfaceClient;
 
     @Inject EventService eventService;
+
+    @Inject AnalysisStorageService analysisStorageService;
 
     private final ObjectMapper objectMapper;
 
