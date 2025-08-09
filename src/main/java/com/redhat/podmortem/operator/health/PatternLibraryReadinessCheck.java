@@ -36,24 +36,23 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
                     client.resources(PatternLibrary.class).inAnyNamespace().list().getItems();
 
             if (libraries.isEmpty()) {
-                log.debug("No PatternLibrary resources found, marking as ready");
-                return HealthCheckResponse.named("pattern-library-sync").up().build();
-            }
-
-            log.debug("Found {} PatternLibrary resources", libraries.size());
-
-            if (startupTime.plus(MAX_WAIT_MINUTES, ChronoUnit.MINUTES).isBefore(Instant.now())) {
-                log.warn("Pattern library sync grace period exceeded, reporting ready anyway");
+                log.trace("No PatternLibrary resources found, marking as ready");
                 return HealthCheckResponse.named("pattern-library-sync").up().build();
             }
 
             Path cacheDir = Paths.get(PATTERN_CACHE_DIR);
             if (!Files.exists(cacheDir)) {
+                if (startupTime
+                        .plus(MAX_WAIT_MINUTES, ChronoUnit.MINUTES)
+                        .isBefore(Instant.now())) {
+                    log.warn(
+                            "Pattern library sync grace period exceeded (no cache dir), reporting ready anyway");
+                    return HealthCheckResponse.named("pattern-library-sync").up().build();
+                }
                 log.debug("Pattern cache directory does not exist: {}", PATTERN_CACHE_DIR);
                 return HealthCheckResponse.named("pattern-library-sync").down().build();
             }
 
-            boolean hasPatterns = false;
             long patternCount = 0;
             try (var stream = Files.walk(cacheDir)) {
                 patternCount =
@@ -63,13 +62,16 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
                                                 path.toString().endsWith(".yml")
                                                         || path.toString().endsWith(".yaml"))
                                 .count();
-                hasPatterns = patternCount > 0;
             }
 
-            if (hasPatterns) {
-                log.debug(
-                        "Found {} pattern files in cache directory, marking as ready",
-                        patternCount);
+            if (patternCount > 0) {
+                log.trace("Found {} pattern files in cache directory, ready", patternCount);
+                return HealthCheckResponse.named("pattern-library-sync").up().build();
+            }
+
+            if (startupTime.plus(MAX_WAIT_MINUTES, ChronoUnit.MINUTES).isBefore(Instant.now())) {
+                log.warn(
+                        "Pattern library sync grace period exceeded (no patterns found), reporting ready anyway");
                 return HealthCheckResponse.named("pattern-library-sync").up().build();
             }
 
