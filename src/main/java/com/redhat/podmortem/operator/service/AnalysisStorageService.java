@@ -71,77 +71,137 @@ public class AnalysisStorageService {
     private void storeToPodAnnotations(
             Pod pod, Podmortem monitor, AnalysisResult result, String aiAnalysis) {
 
+        // retry exponential backoff
+        final int maxRetries = 5;
+        final long initialDelayMs = 100;
+
         Uni.createFrom()
                 .item(
-                        () -> {
-                            try {
-                                Map<String, String> annotations =
-                                        pod.getMetadata().getAnnotations();
-                                if (annotations == null) {
-                                    annotations = new HashMap<>();
-                                }
-
-                                if (aiAnalysis != null && !aiAnalysis.isBlank()) {
-                                    annotations.put(ANALYSIS_ANNOTATION, aiAnalysis);
-                                } else {
-                                    String summary =
-                                            String.format(
-                                                    "Pattern Analysis: Severity=%s, SignificantEvents=%d, TotalMatches=%d",
-                                                    result.getSummary() != null
-                                                            ? result.getSummary()
-                                                                    .getHighestSeverity()
-                                                            : "UNKNOWN",
-                                                    result.getSummary() != null
-                                                            ? result.getSummary()
-                                                                    .getSignificantEvents()
-                                                            : 0,
-                                                    result.getEvents() != null
-                                                            ? result.getEvents().size()
-                                                            : 0);
-                                    annotations.put(ANALYSIS_ANNOTATION, summary);
-                                }
-
-                                // Store metadata
-                                if (result.getSummary() != null
-                                        && result.getSummary().getHighestSeverity() != null) {
-                                    annotations.put(
-                                            SEVERITY_ANNOTATION,
-                                            result.getSummary().getHighestSeverity());
-                                }
-                                annotations.put(TIMESTAMP_ANNOTATION, Instant.now().toString());
-                                annotations.put(
-                                        MONITOR_ANNOTATION, monitor.getMetadata().getName());
-
-                                pod.getMetadata().setAnnotations(annotations);
-                                client.pods()
-                                        .inNamespace(pod.getMetadata().getNamespace())
-                                        .withName(pod.getMetadata().getName())
-                                        .patch(pod);
-
-                                log.debug(
-                                        "Stored analysis results in pod annotations: {}",
-                                        pod.getMetadata().getName());
-                                return true;
-
-                            } catch (Exception e) {
-                                log.warn(
-                                        "Failed to store analysis in pod annotations: {}",
-                                        e.getMessage());
-                                return false;
-                            }
-                        })
+                        () ->
+                                attemptAnnotationUpdate(
+                                        pod,
+                                        monitor,
+                                        result,
+                                        aiAnalysis,
+                                        0,
+                                        maxRetries,
+                                        initialDelayMs))
                 .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
                 .subscribe()
                 .with(
                         success -> {
-                            if (success) {
+                            if (Boolean.TRUE.equals(success)) {
                                 log.trace("Pod annotations updated successfully");
                             }
                         },
                         failure ->
                                 log.debug(
-                                        "Failed to update pod annotations: {}",
+                                        "Failed to update pod annotations after retries: {}",
                                         failure.getMessage()));
+    }
+
+    /** Attempts to update pod annotations with retry logic for conflict resolution. */
+    private boolean attemptAnnotationUpdate(
+            Pod pod,
+            Podmortem monitor,
+            AnalysisResult result,
+            String aiAnalysis,
+            int attempt,
+            int maxRetries,
+            long delayMs) {
+
+        if (attempt > 0) {
+            try {
+                // Exponential backoff
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted while waiting to retry annotation update");
+                return false;
+            }
+        }
+
+        try {
+            // always fetch the latest version before attempting update
+            Pod latest =
+                    client.pods()
+                            .inNamespace(pod.getMetadata().getNamespace())
+                            .withName(pod.getMetadata().getName())
+                            .get();
+
+            if (latest == null) {
+                log.warn("Pod not found: {}", pod.getMetadata().getName());
+                return false;
+            }
+
+            Map<String, String> annotations = latest.getMetadata().getAnnotations();
+            if (annotations == null) {
+                annotations = new HashMap<>();
+            }
+
+            if (aiAnalysis != null && !aiAnalysis.isBlank()) {
+                annotations.put(ANALYSIS_ANNOTATION, aiAnalysis);
+            } else {
+                String summary =
+                        String.format(
+                                "Pattern Analysis: Severity=%s, SignificantEvents=%d, TotalMatches=%d",
+                                result.getSummary() != null
+                                        ? result.getSummary().getHighestSeverity()
+                                        : "UNKNOWN",
+                                result.getSummary() != null
+                                        ? result.getSummary().getSignificantEvents()
+                                        : 0,
+                                result.getEvents() != null ? result.getEvents().size() : 0);
+                annotations.put(ANALYSIS_ANNOTATION, summary);
+            }
+
+            // Store metadata
+            if (result.getSummary() != null && result.getSummary().getHighestSeverity() != null) {
+                annotations.put(SEVERITY_ANNOTATION, result.getSummary().getHighestSeverity());
+            }
+            annotations.put(TIMESTAMP_ANNOTATION, Instant.now().toString());
+            annotations.put(MONITOR_ANNOTATION, monitor.getMetadata().getName());
+
+            latest.getMetadata().setAnnotations(annotations);
+            client.pods()
+                    .inNamespace(latest.getMetadata().getNamespace())
+                    .withName(latest.getMetadata().getName())
+                    .patch(latest);
+
+            log.debug(
+                    "Stored analysis results in pod annotations: {} (attempt {})",
+                    latest.getMetadata().getName(),
+                    attempt + 1);
+            return true;
+
+        } catch (io.fabric8.kubernetes.client.KubernetesClientException e) {
+            // check if it's a conflict error (409) or forbidden (403)
+            if (e.getCode() == 409 && attempt < maxRetries) {
+                log.debug(
+                        "Conflict updating pod annotations for {}, retrying (attempt {}/{})",
+                        pod.getMetadata().getName(),
+                        attempt + 1,
+                        maxRetries);
+                // recursive retry with exponential backoff
+                return attemptAnnotationUpdate(
+                        pod, monitor, result, aiAnalysis, attempt + 1, maxRetries, delayMs * 2);
+            } else if (e.getCode() == 403) {
+                log.warn(
+                        "Forbidden to update pod annotations for {} - check RBAC permissions: {}",
+                        pod.getMetadata().getName(),
+                        e.getMessage());
+                return false;
+            } else {
+                log.warn(
+                        "Failed to store analysis in pod annotations after {} attempts: {}",
+                        attempt + 1,
+                        e.getMessage());
+                return false;
+            }
+        } catch (Exception e) {
+            log.warn("Unexpected error storing analysis in pod annotations: {}", e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -151,109 +211,21 @@ public class AnalysisStorageService {
     private void storeToPodmortemStatus(
             Pod pod, Podmortem monitor, AnalysisResult result, String aiAnalysis) {
 
+        // retry with exponential backoff
+        final int maxRetries = 5;
+        final long initialDelayMs = 100;
+
         Uni.createFrom()
                 .item(
-                        () -> {
-                            try {
-                                Podmortem latest =
-                                        client.resources(Podmortem.class)
-                                                .inNamespace(monitor.getMetadata().getNamespace())
-                                                .withName(monitor.getMetadata().getName())
-                                                .get();
-
-                                if (latest == null) {
-                                    log.warn(
-                                            "Podmortem not found: {}",
-                                            monitor.getMetadata().getName());
-                                    return false;
-                                }
-
-                                if (latest.getStatus() == null) {
-                                    latest.setStatus(new PodmortemStatus());
-                                }
-
-                                List<PodmortemStatus.PodFailureStatus> recentFailures =
-                                        latest.getStatus().getRecentFailures();
-                                if (recentFailures == null) {
-                                    recentFailures = new ArrayList<>();
-                                }
-
-                                PodmortemStatus.PodFailureStatus failureStatus =
-                                        new PodmortemStatus.PodFailureStatus();
-                                failureStatus.setPodName(pod.getMetadata().getName());
-                                failureStatus.setPodNamespace(pod.getMetadata().getNamespace());
-                                failureStatus.setFailureTime(Instant.now());
-                                failureStatus.setAnalysisStatus("Completed");
-
-                                if (aiAnalysis != null && !aiAnalysis.isBlank()) {
-                                    failureStatus.setExplanation(aiAnalysis);
-                                } else {
-                                    StringBuilder explanation = new StringBuilder();
-                                    explanation.append("Pattern Analysis Results:\n");
-                                    explanation.append("========================\n");
-                                    if (result.getSummary() != null) {
-                                        explanation
-                                                .append("Highest Severity: ")
-                                                .append(result.getSummary().getHighestSeverity())
-                                                .append("\n");
-                                        explanation
-                                                .append("Significant Events: ")
-                                                .append(result.getSummary().getSignificantEvents())
-                                                .append("\n");
-                                    }
-                                    if (result.getEvents() != null
-                                            && !result.getEvents().isEmpty()) {
-                                        explanation.append("\nTop Matches:\n");
-                                        result.getEvents().stream()
-                                                .limit(5)
-                                                .forEach(
-                                                        event -> {
-                                                            if (event.getMatchedPattern() != null) {
-                                                                explanation
-                                                                        .append("- ")
-                                                                        .append(
-                                                                                event.getMatchedPattern()
-                                                                                        .getName())
-                                                                        .append(" (Severity: ")
-                                                                        .append(
-                                                                                event.getMatchedPattern()
-                                                                                        .getSeverity())
-                                                                        .append(", Score: ")
-                                                                        .append(
-                                                                                String.format(
-                                                                                        "%.2f",
-                                                                                        event
-                                                                                                .getScore()))
-                                                                        .append(")\n");
-                                                            }
-                                                        });
-                                    }
-                                    failureStatus.setExplanation(explanation.toString());
-                                }
-
-                                recentFailures.add(0, failureStatus);
-
-                                if (recentFailures.size() > MAX_RECENT_FAILURES) {
-                                    recentFailures = recentFailures.subList(0, MAX_RECENT_FAILURES);
-                                }
-
-                                latest.getStatus().setRecentFailures(recentFailures);
-                                latest.getStatus().setLastUpdate(Instant.now());
-
-                                client.resource(latest).patchStatus();
-
-                                log.debug(
-                                        "Stored analysis results in Podmortem status: {}",
-                                        latest.getMetadata().getName());
-                                return true;
-
-                            } catch (Exception e) {
-                                log.warn(
-                                        "Failed to store analysis in Podmortem status: {}",
-                                        e.getMessage());
-                                return false;
-                            }
-                        })
+                        () ->
+                                attemptStatusUpdate(
+                                        pod,
+                                        monitor,
+                                        result,
+                                        aiAnalysis,
+                                        0,
+                                        maxRetries,
+                                        initialDelayMs))
                 .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
                 .subscribe()
                 .with(
@@ -264,7 +236,133 @@ public class AnalysisStorageService {
                         },
                         failure ->
                                 log.debug(
-                                        "Failed to update Podmortem status: {}",
+                                        "Failed to update Podmortem status after retries: {}",
                                         failure.getMessage()));
+    }
+
+    /** Attempts to update the Podmortem status with retry logic for conflict resolution. */
+    private boolean attemptStatusUpdate(
+            Pod pod,
+            Podmortem monitor,
+            AnalysisResult result,
+            String aiAnalysis,
+            int attempt,
+            int maxRetries,
+            long delayMs) {
+
+        if (attempt > 0) {
+            try {
+                // Exponential backoff
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted while waiting to retry status update");
+                return false;
+            }
+        }
+
+        try {
+            Podmortem latest =
+                    client.resources(Podmortem.class)
+                            .inNamespace(monitor.getMetadata().getNamespace())
+                            .withName(monitor.getMetadata().getName())
+                            .get();
+
+            if (latest == null) {
+                log.warn("Podmortem not found: {}", monitor.getMetadata().getName());
+                return false;
+            }
+
+            if (latest.getStatus() == null) {
+                latest.setStatus(new PodmortemStatus());
+            }
+
+            List<PodmortemStatus.PodFailureStatus> recentFailures =
+                    latest.getStatus().getRecentFailures();
+            if (recentFailures == null) {
+                recentFailures = new ArrayList<>();
+            }
+
+            PodmortemStatus.PodFailureStatus failureStatus = new PodmortemStatus.PodFailureStatus();
+            failureStatus.setPodName(pod.getMetadata().getName());
+            failureStatus.setPodNamespace(pod.getMetadata().getNamespace());
+            failureStatus.setFailureTime(Instant.now());
+            failureStatus.setAnalysisStatus("Completed");
+
+            if (aiAnalysis != null && !aiAnalysis.isBlank()) {
+                failureStatus.setExplanation(aiAnalysis);
+            } else {
+                StringBuilder explanation = new StringBuilder();
+                explanation.append("Pattern Analysis Results:\n");
+                explanation.append("========================\n");
+                if (result.getSummary() != null) {
+                    explanation
+                            .append("Highest Severity: ")
+                            .append(result.getSummary().getHighestSeverity())
+                            .append("\n");
+                    explanation
+                            .append("Significant Events: ")
+                            .append(result.getSummary().getSignificantEvents())
+                            .append("\n");
+                }
+                if (result.getEvents() != null && !result.getEvents().isEmpty()) {
+                    explanation.append("\nTop Matches:\n");
+                    result.getEvents().stream()
+                            .limit(5)
+                            .forEach(
+                                    event -> {
+                                        if (event.getMatchedPattern() != null) {
+                                            explanation
+                                                    .append("- ")
+                                                    .append(event.getMatchedPattern().getName())
+                                                    .append(" (Severity: ")
+                                                    .append(event.getMatchedPattern().getSeverity())
+                                                    .append(", Score: ")
+                                                    .append(String.format("%.2f", event.getScore()))
+                                                    .append(")\n");
+                                        }
+                                    });
+                }
+                failureStatus.setExplanation(explanation.toString());
+            }
+
+            recentFailures.add(0, failureStatus);
+
+            if (recentFailures.size() > MAX_RECENT_FAILURES) {
+                recentFailures = recentFailures.subList(0, MAX_RECENT_FAILURES);
+            }
+
+            latest.getStatus().setRecentFailures(recentFailures);
+            latest.getStatus().setLastUpdate(Instant.now());
+
+            // Attempt to patch the status
+            client.resource(latest).patchStatus();
+
+            log.debug(
+                    "Stored analysis results in Podmortem status: {} (attempt {})",
+                    latest.getMetadata().getName(),
+                    attempt + 1);
+            return true;
+
+        } catch (io.fabric8.kubernetes.client.KubernetesClientException e) {
+            if (e.getCode() == 409 && attempt < maxRetries) {
+                log.debug(
+                        "Conflict updating Podmortem status for {}, retrying (attempt {}/{})",
+                        monitor.getMetadata().getName(),
+                        attempt + 1,
+                        maxRetries);
+                return attemptStatusUpdate(
+                        pod, monitor, result, aiAnalysis, attempt + 1, maxRetries, delayMs * 2);
+            } else {
+                log.warn(
+                        "Failed to store analysis in Podmortem status after {} attempts: {}",
+                        attempt + 1,
+                        e.getMessage());
+                return false;
+            }
+        } catch (Exception e) {
+            log.warn("Unexpected error storing analysis in Podmortem status: {}", e.getMessage());
+            return false;
+        }
     }
 }
