@@ -66,53 +66,15 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
                 hasPatterns = patternCount > 0;
             }
 
-            if (!hasPatterns) {
-                log.debug("No pattern files found in cache directory");
-                return HealthCheckResponse.named("pattern-library-sync").down().build();
+            if (hasPatterns) {
+                log.debug(
+                        "Found {} pattern files in cache directory, marking as ready",
+                        patternCount);
+                return HealthCheckResponse.named("pattern-library-sync").up().build();
             }
 
-            log.debug("Found {} pattern files in cache directory", patternCount);
-
-            boolean hasSuccessfulSync =
-                    libraries.stream()
-                            .anyMatch(
-                                    lib -> {
-                                        if (lib.getStatus() == null) {
-                                            log.trace(
-                                                    "PatternLibrary {} has null status",
-                                                    lib.getMetadata().getName());
-                                            return false;
-                                        }
-                                        String phase = lib.getStatus().getPhase();
-                                        log.trace(
-                                                "PatternLibrary {} has phase: {}",
-                                                lib.getMetadata().getName(),
-                                                phase);
-                                        // Accept either "Ready" or "Success" as valid states
-                                        return "Ready".equalsIgnoreCase(phase)
-                                                || "Success".equalsIgnoreCase(phase);
-                                    });
-
-            if (!hasSuccessfulSync) {
-                log.debug("No PatternLibrary has successful sync status");
-                libraries.forEach(
-                        lib -> {
-                            if (lib.getStatus() != null) {
-                                log.debug(
-                                        "PatternLibrary {} status: phase={}",
-                                        lib.getMetadata().getName(),
-                                        lib.getStatus().getPhase());
-                            } else {
-                                log.debug(
-                                        "PatternLibrary {} has null status",
-                                        lib.getMetadata().getName());
-                            }
-                        });
-                return HealthCheckResponse.named("pattern-library-sync").down().build();
-            }
-
-            log.trace("Pattern library readiness check passed");
-            return HealthCheckResponse.named("pattern-library-sync").up().build();
+            log.debug("No pattern files found in cache directory yet, waiting for sync");
+            return HealthCheckResponse.named("pattern-library-sync").down().build();
 
         } catch (Exception e) {
             log.error("Error during pattern library readiness check", e);
