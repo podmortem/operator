@@ -60,10 +60,7 @@ public class AnalysisStorageService {
     public void storeAnalysisResults(
             Pod pod, Podmortem monitor, AnalysisResult result, String aiAnalysis) {
 
-        // Store in pod annotations (asynchronously)
         storeToPodAnnotations(pod, monitor, result, aiAnalysis);
-
-        // Store in Podmortem CR status (asynchronously)
         storeToPodmortemStatus(pod, monitor, result, aiAnalysis);
     }
 
@@ -115,7 +112,6 @@ public class AnalysisStorageService {
                                 annotations.put(
                                         MONITOR_ANNOTATION, monitor.getMetadata().getName());
 
-                                // Update the pod
                                 pod.getMetadata().setAnnotations(annotations);
                                 client.pods()
                                         .inNamespace(pod.getMetadata().getNamespace())
@@ -159,12 +155,25 @@ public class AnalysisStorageService {
                 .item(
                         () -> {
                             try {
-                                if (monitor.getStatus() == null) {
-                                    monitor.setStatus(new PodmortemStatus());
+                                Podmortem latest =
+                                        client.resources(Podmortem.class)
+                                                .inNamespace(monitor.getMetadata().getNamespace())
+                                                .withName(monitor.getMetadata().getName())
+                                                .get();
+
+                                if (latest == null) {
+                                    log.warn(
+                                            "Podmortem not found: {}",
+                                            monitor.getMetadata().getName());
+                                    return false;
+                                }
+
+                                if (latest.getStatus() == null) {
+                                    latest.setStatus(new PodmortemStatus());
                                 }
 
                                 List<PodmortemStatus.PodFailureStatus> recentFailures =
-                                        monitor.getStatus().getRecentFailures();
+                                        latest.getStatus().getRecentFailures();
                                 if (recentFailures == null) {
                                     recentFailures = new ArrayList<>();
                                 }
@@ -228,14 +237,14 @@ public class AnalysisStorageService {
                                     recentFailures = recentFailures.subList(0, MAX_RECENT_FAILURES);
                                 }
 
-                                monitor.getStatus().setRecentFailures(recentFailures);
-                                monitor.getStatus().setLastUpdate(Instant.now());
+                                latest.getStatus().setRecentFailures(recentFailures);
+                                latest.getStatus().setLastUpdate(Instant.now());
 
-                                client.resource(monitor).patchStatus();
+                                client.resource(latest).patchStatus();
 
                                 log.debug(
                                         "Stored analysis results in Podmortem status: {}",
-                                        monitor.getMetadata().getName());
+                                        latest.getMetadata().getName());
                                 return true;
 
                             } catch (Exception e) {
@@ -249,7 +258,7 @@ public class AnalysisStorageService {
                 .subscribe()
                 .with(
                         success -> {
-                            if (success) {
+                            if (Boolean.TRUE.equals(success)) {
                                 log.trace("Podmortem status updated successfully");
                             }
                         },

@@ -49,7 +49,6 @@ public class PodFailureWatcher {
     // track processed failures
     private final Map<String, Instant> processedFailures = new ConcurrentHashMap<>();
 
-    // Optional list of namespaces to watch; if empty, watch all namespaces and filter in handler
     @ConfigProperty(name = "podmortem.watch.namespaces")
     Optional<String> watchNamespacesProperty;
 
@@ -88,7 +87,6 @@ public class PodFailureWatcher {
      * indicate failures. Includes automatic recovery logic for watch connection failures.
      */
     private void startPodWatcher() {
-        // Create watchers per namespace if configured; else a single all-namespaces watcher
         List<String> targetNamespaces = new ArrayList<>(allowedNamespaces);
         if (targetNamespaces.isEmpty()) {
             Watch watch = client.pods().inAnyNamespace().watch(createWatcher());
@@ -109,7 +107,6 @@ public class PodFailureWatcher {
                     if (action != Action.MODIFIED) {
                         return;
                     }
-                    // Namespace filter if watching all namespaces but want to limit
                     if (!allowedNamespaces.isEmpty()
                             && !allowedNamespaces.contains(pod.getMetadata().getNamespace())) {
                         return;
@@ -175,7 +172,6 @@ public class PodFailureWatcher {
         // find matching Podmortem resources first; if none, ignore silently
         List<Podmortem> podmortemResources = findMatchingPodmortemResources(pod);
         if (podmortemResources.isEmpty()) {
-            // Unmonitored pod; do not log at info level to avoid noise
             log.debug("Ignoring failure for unmonitored pod: {}", podKey);
             return;
         }
@@ -564,7 +560,6 @@ public class PodFailureWatcher {
 
     /** Restarts the pod watcher after a connection failure. */
     private void restartWatcher() {
-        // Close existing watches before restarting
         for (Watch w : activeWatches) {
             try {
                 w.close();
