@@ -10,6 +10,7 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.health.HealthCheck;
 import org.eclipse.microprofile.health.HealthCheckResponse;
 import org.eclipse.microprofile.health.Readiness;
@@ -22,7 +23,11 @@ import org.slf4j.LoggerFactory;
 public class PatternLibraryReadinessCheck implements HealthCheck {
 
     private static final Logger log = LoggerFactory.getLogger(PatternLibraryReadinessCheck.class);
-    private static final String PATTERN_CACHE_DIR = "/shared/patterns";
+    private static final String DEFAULT_PATTERN_CACHE_DIR = "/shared/patterns";
+
+    @ConfigProperty(name = "pattern.cache.directory", defaultValue = DEFAULT_PATTERN_CACHE_DIR)
+    String patternCacheDir;
+
     private static final int MAX_WAIT_MINUTES = 5;
 
     @Inject KubernetesClient client;
@@ -40,7 +45,20 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
                 return HealthCheckResponse.named("pattern-library-sync").up().build();
             }
 
-            Path cacheDir = Paths.get(PATTERN_CACHE_DIR);
+            boolean anyReady =
+                    libraries.stream()
+                            .anyMatch(
+                                    lib ->
+                                            lib.getStatus() != null
+                                                    && "Ready"
+                                                            .equalsIgnoreCase(
+                                                                    lib.getStatus().getPhase()));
+            if (anyReady) {
+                log.trace("At least one PatternLibrary reports Ready phase; marking ready");
+                return HealthCheckResponse.named("pattern-library-sync").up().build();
+            }
+
+            Path cacheDir = Paths.get(patternCacheDir);
             if (!Files.exists(cacheDir)) {
                 if (startupTime
                         .plus(MAX_WAIT_MINUTES, ChronoUnit.MINUTES)
@@ -49,7 +67,7 @@ public class PatternLibraryReadinessCheck implements HealthCheck {
                             "Pattern library sync grace period exceeded (no cache dir), reporting ready anyway");
                     return HealthCheckResponse.named("pattern-library-sync").up().build();
                 }
-                log.debug("Pattern cache directory does not exist: {}", PATTERN_CACHE_DIR);
+                log.debug("Pattern cache directory does not exist: {}", patternCacheDir);
                 return HealthCheckResponse.named("pattern-library-sync").down().build();
             }
 
