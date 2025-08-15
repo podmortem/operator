@@ -25,5 +25,7 @@ FROM registry.access.redhat.com/ubi9/ubi-minimal
 WORKDIR /work/
 COPY --from=build /home/quarkus/target/*-runner /work/application
 
+ENV XDG_CONFIG_HOME=/tmp
+
 EXPOSE 8080
 CMD ["./application", "-Dquarkus.http.host=0.0.0.0"]
