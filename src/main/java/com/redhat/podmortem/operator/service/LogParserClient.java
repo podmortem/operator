@@ -46,10 +46,6 @@ public class LogParserClient {
                                         "Received analysis result for pod: {}",
                                         failureData.getPod().getMetadata().getName()))
                 .onFailure()
-                .retry()
-                .withBackOff(java.time.Duration.ofSeconds(2), java.time.Duration.ofSeconds(30))
-                .atMost(5)
-                .onFailure()
                 .invoke(
                         throwable ->
                                 log.error(

@@ -2,7 +2,6 @@ package com.redhat.podmortem.operator.service;
 
 import com.redhat.podmortem.common.model.analysis.AnalysisResult;
 import com.redhat.podmortem.common.model.kube.aiprovider.AIProvider;
-import com.redhat.podmortem.common.model.kube.patternlibrary.PatternLibrary;
 import com.redhat.podmortem.common.model.kube.podmortem.PodFailureData;
 import com.redhat.podmortem.common.model.kube.podmortem.Podmortem;
 import com.redhat.podmortem.common.model.kube.podmortem.PodmortemStatus;
@@ -16,25 +15,15 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,29 +55,6 @@ public class PodFailureWatcher {
     private Set<String> allowedNamespaces = Set.of();
     private final List<Watch> activeWatches = new CopyOnWriteArrayList<>();
 
-    @ConfigProperty(name = "podmortem.processing.startup-delay-seconds", defaultValue = "60")
-    int startupDelaySeconds;
-
-    @ConfigProperty(name = "quarkus.rest-client.log-parser.url")
-    Optional<String> logParserBaseUrlProperty;
-
-    @ConfigProperty(name = "quarkus.rest-client.ai-interface.url")
-    Optional<String> aiInterfaceBaseUrlProperty;
-
-    private final AtomicBoolean systemReady = new AtomicBoolean(false);
-    private Instant appStartupTime = Instant.now();
-    private final HttpClient httpClient =
-            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
-
-    // Queue pod failures until system is ready
-    private static final int MAX_PENDING_QUEUE_SIZE = 500;
-    private final ConcurrentLinkedQueue<String> pendingFailureQueue = new ConcurrentLinkedQueue<>();
-    private final Set<String> queuedFailureKeys =
-            java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
-    // Pod annotations
-    private static final String ANNOTATION_PREFIX = "podmortem.io/";
-    private static final String ANALYSIS_ID_ANNOTATION = ANNOTATION_PREFIX + "analysis-id";
-
     /**
      * Initializes the pod failure watcher on application startup.
      *
@@ -98,7 +64,6 @@ public class PodFailureWatcher {
      */
     public void onStartup(@Observes StartupEvent event) {
         log.info("Starting real-time pod failure watcher");
-        appStartupTime = Instant.now();
         // Parse configured namespaces (comma-separated)
         String namespaces = watchNamespacesProperty.orElse("");
         if (!namespaces.isBlank()) {
@@ -113,7 +78,6 @@ public class PodFailureWatcher {
             log.info("Configured to watch all namespaces (no namespace filter set)");
         }
         startPodWatcher();
-        startReadinessGuard();
     }
 
     /**
@@ -148,10 +112,6 @@ public class PodFailureWatcher {
                         return;
                     }
                     if (hasPodFailed(pod)) {
-                        if (!systemReady.get()) {
-                            enqueuePendingFailure(pod);
-                            return;
-                        }
                         handlePodFailure(pod);
                     }
                 } catch (Exception e) {
@@ -174,204 +134,6 @@ public class PodFailureWatcher {
                 }
             }
         };
-    }
-
-    /**
-     * Starts a background readiness guard.
-     *
-     * <p>This guard periodically checks whether the system is allowed to process pod failures. The
-     * system becomes ready when all of the following are true:
-     *
-     * <ul>
-     *   <li>The configured startup delay (property: {@code
-     *       podmortem.processing.startup-delay-seconds}) has elapsed
-     *   <li>At least one {@code PatternLibrary} reports phase {@code Ready} (or none exist)
-     *   <li>The Log Parser service {@code /q/health/ready} endpoint returns HTTP 2xx
-     *   <li>The AI Interface {@code /q/health/ready} endpoint returns HTTP 2xx
-     * </ul>
-     *
-     * <p>Once ready, any queued pod failure events are processed asynchronously.
-     */
-    private void startReadinessGuard() {
-        Thread.ofVirtual()
-                .name("podmortem-readiness-guard")
-                .start(
-                        () -> {
-                            while (!systemReady.get()) {
-                                try {
-                                    boolean ready = checkSystemReady();
-                                    if (ready) {
-                                        systemReady.set(true);
-                                        log.info(
-                                                "System dependencies ready; enabling failure processing");
-                                        processQueuedFailuresAsync();
-                                        break;
-                                    }
-                                    Thread.sleep(5000);
-                                } catch (InterruptedException ie) {
-                                    Thread.currentThread().interrupt();
-                                    break;
-                                } catch (Exception e) {
-                                    log.debug("Readiness check failed: {}", e.getMessage());
-                                    try {
-                                        Thread.sleep(5000);
-                                    } catch (InterruptedException ie) {
-                                        Thread.currentThread().interrupt();
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-    }
-
-    /**
-     * Enqueues a failed pod event while the system is not yet ready to process failures.
-     *
-     * <p>Uses a bounded FIFO queue to avoid unbounded memory growth. Duplicate pod keys are
-     * de-duplicated while pending. When the queue is full, the oldest entry is dropped and a warn
-     * is logged.
-     *
-     * @param pod the pod associated with the failure event to buffer
-     */
-    private void enqueuePendingFailure(Pod pod) {
-        String podKey = pod.getMetadata().getNamespace() + "/" + pod.getMetadata().getName();
-        // Avoid duplicate entries
-        if (queuedFailureKeys.add(podKey)) {
-            if (pendingFailureQueue.size() >= MAX_PENDING_QUEUE_SIZE) {
-                String dropped = pendingFailureQueue.poll();
-                if (dropped != null) {
-                    queuedFailureKeys.remove(dropped);
-                    log.warn("Pending failure queue full; dropping oldest: {}", dropped);
-                }
-            }
-            pendingFailureQueue.offer(podKey);
-            log.debug("Queued pod failure event until ready: {}", podKey);
-        }
-    }
-
-    /**
-     * Drains the pending failure queue and processes each entry asynchronously.
-     *
-     * <p>For each queued item, the latest pod object is fetched to confirm the failure state before
-     * processing; this avoids acting on stale data.
-     */
-    private void processQueuedFailuresAsync() {
-        Thread.ofVirtual()
-                .name("podmortem-queued-failure-drain")
-                .start(
-                        () -> {
-                            String podKey;
-                            while ((podKey = pendingFailureQueue.poll()) != null) {
-                                try {
-                                    queuedFailureKeys.remove(podKey);
-                                    String[] parts = podKey.split("/", 2);
-                                    if (parts.length != 2) {
-                                        continue;
-                                    }
-                                    String ns = parts[0];
-                                    String name = parts[1];
-                                    Pod latest = client.pods().inNamespace(ns).withName(name).get();
-                                    if (latest != null && hasPodFailed(latest)) {
-                                        handlePodFailure(latest);
-                                    }
-                                } catch (Exception e) {
-                                    log.debug(
-                                            "Failed processing queued failure {}: {}",
-                                            podKey,
-                                            e.getMessage());
-                                }
-                            }
-                        });
-    }
-
-    /**
-     * Evaluates whether the operator may begin processing pod failures.
-     *
-     * <p>Readiness requires that the startup delay has elapsed, pattern libraries are ready (or not
-     * present), and dependent services (log-parser and AI interface) report ready via their {@code
-     * /q/health/ready} endpoints.
-     *
-     * @return {@code true} if failure processing can start; {@code false} otherwise
-     */
-    private boolean checkSystemReady() {
-        if (Duration.between(appStartupTime, Instant.now()).getSeconds() < startupDelaySeconds) {
-            return false;
-        }
-
-        // Pattern libraries: ready if none defined or any reports phase Ready
-        try {
-            List<com.redhat.podmortem.common.model.kube.patternlibrary.PatternLibrary> libs =
-                    client.resources(PatternLibrary.class).inAnyNamespace().list().getItems();
-            boolean patternsReady =
-                    libs.isEmpty()
-                            || libs.stream()
-                                    .anyMatch(
-                                            l ->
-                                                    l.getStatus() != null
-                                                            && "Ready"
-                                                                    .equalsIgnoreCase(
-                                                                            l.getStatus()
-                                                                                    .getPhase()));
-            if (!patternsReady) {
-                return false;
-            }
-        } catch (Exception e) {
-            return false;
-        }
-
-        // log-parser ready
-        String logParserUrl =
-                logParserBaseUrlProperty.orElseGet(
-                        () -> System.getenv("QUARKUS_REST_CLIENT_LOG_PARSER_URL"));
-        if (logParserUrl == null || logParserUrl.isBlank()) {
-            return false;
-        }
-        if (!isServiceReady(logParserUrl)) {
-            return false;
-        }
-
-        // ai-interface ready
-        String aiUrl =
-                aiInterfaceBaseUrlProperty.orElseGet(
-                        () -> System.getenv("QUARKUS_REST_CLIENT_AI_INTERFACE_URL"));
-        if (aiUrl == null || aiUrl.isBlank()) {
-            return false;
-        }
-        if (!isServiceReady(aiUrl)) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Checks whether a dependent service is ready by querying its readiness endpoint.
-     *
-     * @param baseUrl the base URL of the service (without trailing path); {@code /q/health/ready}
-     *     will be appended
-     * @return {@code true} if the service responds with HTTP 2xx, {@code false} otherwise
-     */
-    private boolean isServiceReady(String baseUrl) {
-        try {
-            String healthUrl =
-                    baseUrl.endsWith("/")
-                            ? baseUrl + "q/health/ready"
-                            : baseUrl + "/q/health/ready";
-            HttpRequest request =
-                    HttpRequest.newBuilder()
-                            .GET()
-                            .uri(URI.create(healthUrl))
-                            .timeout(Duration.ofSeconds(2))
-                            .build();
-            HttpResponse<Void> response =
-                    httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            return response.statusCode() >= 200 && response.statusCode() < 300;
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            return false;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     /**
@@ -407,26 +169,6 @@ public class PodFailureWatcher {
     private void handlePodFailure(Pod pod) {
         String podKey = pod.getMetadata().getNamespace() + "/" + pod.getMetadata().getName();
 
-        // Skip if an analysis-id annotation already exists (already analyzed or in-progress)
-        try {
-            Pod latest =
-                    client.pods()
-                            .inNamespace(pod.getMetadata().getNamespace())
-                            .withName(pod.getMetadata().getName())
-                            .get();
-            if (latest != null
-                    && latest.getMetadata().getAnnotations() != null
-                    && latest.getMetadata().getAnnotations().containsKey(ANALYSIS_ID_ANNOTATION)) {
-                log.debug(
-                        "Skipping analysis for {}: analysis-id already present: {}",
-                        podKey,
-                        latest.getMetadata().getAnnotations().get(ANALYSIS_ID_ANNOTATION));
-                return;
-            }
-        } catch (Exception e) {
-            log.warn("Failed to check existing analysis-id for {}: {}", podKey, e.getMessage());
-        }
-
         // find matching Podmortem resources first; if none, ignore silently
         List<Podmortem> podmortemResources = findMatchingPodmortemResources(pod);
         if (podmortemResources.isEmpty()) {
@@ -451,105 +193,9 @@ public class PodFailureWatcher {
             processedFailures.put(podKey, failureTime);
         }
 
-        // Assign and annotate a deterministic analysis ID before starting analysis to prevent
-        // duplicates
-        String analysisId = generateAnalysisId(pod, failureTime);
-        boolean annotated = annotateAnalysisIdWithRetry(pod, analysisId, 0, 5, 100);
-        if (!annotated) {
-            log.warn(
-                    "Proceeding without analysis-id annotation for {} (id: {})",
-                    podKey,
-                    analysisId);
-        }
-
         for (Podmortem podmortem : podmortemResources) {
             eventService.emitFailureDetected(pod, podmortem);
             processPodFailureForPodmortem(podmortem, pod);
-        }
-    }
-
-    /**
-     * Generates a deterministic analysis ID based on pod UID and failure timestamp.
-     *
-     * <p>Uses name-based UUID so the same pod failure yields the same ID across restarts. Falls
-     * back to a random UUID if the failure time is unavailable.
-     */
-    private String generateAnalysisId(Pod pod, Instant failureTime) {
-        try {
-            String uid =
-                    pod.getMetadata().getUid() != null
-                            ? pod.getMetadata().getUid()
-                            : pod.getMetadata().getName();
-            String failureComponent = failureTime != null ? failureTime.toString() : "no-time";
-            String seed = uid + ":" + failureComponent;
-            return UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
-        } catch (Exception e) {
-            return UUID.randomUUID().toString();
-        }
-    }
-
-    /**
-     * Adds the analysis-id annotation to the pod with retry and backoff, if not already present.
-     */
-    private boolean annotateAnalysisIdWithRetry(
-            Pod pod, String analysisId, int attempt, int maxRetries, long delayMs) {
-        if (attempt > 0) {
-            try {
-                Thread.sleep(delayMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-
-        try {
-            Pod latest =
-                    client.pods()
-                            .inNamespace(pod.getMetadata().getNamespace())
-                            .withName(pod.getMetadata().getName())
-                            .get();
-            if (latest == null) {
-                return false;
-            }
-
-            Map<String, String> annotations = latest.getMetadata().getAnnotations();
-            if (annotations == null) {
-                annotations = new HashMap<>();
-            }
-
-            String key = ANALYSIS_ID_ANNOTATION;
-            if (annotations.containsKey(key)) {
-                return true;
-            }
-
-            annotations.put(key, analysisId);
-            latest.getMetadata().setAnnotations(annotations);
-            client.pods()
-                    .inNamespace(latest.getMetadata().getNamespace())
-                    .withName(latest.getMetadata().getName())
-                    .patch(latest);
-            return true;
-
-        } catch (io.fabric8.kubernetes.client.KubernetesClientException e) {
-            if (e.getCode() == 409 && attempt < maxRetries) {
-                return annotateAnalysisIdWithRetry(
-                        pod, analysisId, attempt + 1, maxRetries, delayMs * 2);
-            } else if (e.getCode() == 403) {
-                log.warn(
-                        "Forbidden to set analysis-id annotation for {} - check RBAC permissions: {}",
-                        pod.getMetadata().getName(),
-                        e.getMessage());
-                return false;
-            } else {
-                log.debug(
-                        "Failed to set analysis-id annotation (attempt {}): {}",
-                        attempt + 1,
-                        e.getMessage());
-                return false;
-            }
-        } catch (Exception e) {
-            log.debug("Unexpected error setting analysis-id annotation: {}", e.getMessage());
-            return false;
         }
     }
 
@@ -922,18 +568,17 @@ public class PodFailureWatcher {
         }
         activeWatches.clear();
 
-        Thread.ofVirtual()
-                .name("podmortem-watcher-restart")
-                .start(
+        new Thread(
                         () -> {
                             try {
-                                Thread.sleep(5000);
+                                Thread.sleep(5000); // Wait 5 seconds before restart
                                 log.info("Restarting pod failure watcher...");
                                 startPodWatcher();
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
                                 log.error("Watcher restart interrupted", e);
                             }
-                        });
+                        })
+                .start();
     }
 }
