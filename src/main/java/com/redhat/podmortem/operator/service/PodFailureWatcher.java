@@ -20,14 +20,17 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -82,6 +85,9 @@ public class PodFailureWatcher {
     private final ConcurrentLinkedQueue<String> pendingFailureQueue = new ConcurrentLinkedQueue<>();
     private final Set<String> queuedFailureKeys =
             java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
+    // Pod annotations
+    private static final String ANNOTATION_PREFIX = "podmortem.io/";
+    private static final String ANALYSIS_ID_ANNOTATION = ANNOTATION_PREFIX + "analysis-id";
 
     /**
      * Initializes the pod failure watcher on application startup.
@@ -401,6 +407,26 @@ public class PodFailureWatcher {
     private void handlePodFailure(Pod pod) {
         String podKey = pod.getMetadata().getNamespace() + "/" + pod.getMetadata().getName();
 
+        // Skip if an analysis-id annotation already exists (already analyzed or in-progress)
+        try {
+            Pod latest =
+                    client.pods()
+                            .inNamespace(pod.getMetadata().getNamespace())
+                            .withName(pod.getMetadata().getName())
+                            .get();
+            if (latest != null
+                    && latest.getMetadata().getAnnotations() != null
+                    && latest.getMetadata().getAnnotations().containsKey(ANALYSIS_ID_ANNOTATION)) {
+                log.debug(
+                        "Skipping analysis for {}: analysis-id already present: {}",
+                        podKey,
+                        latest.getMetadata().getAnnotations().get(ANALYSIS_ID_ANNOTATION));
+                return;
+            }
+        } catch (Exception e) {
+            log.warn("Failed to check existing analysis-id for {}: {}", podKey, e.getMessage());
+        }
+
         // find matching Podmortem resources first; if none, ignore silently
         List<Podmortem> podmortemResources = findMatchingPodmortemResources(pod);
         if (podmortemResources.isEmpty()) {
@@ -425,9 +451,105 @@ public class PodFailureWatcher {
             processedFailures.put(podKey, failureTime);
         }
 
+        // Assign and annotate a deterministic analysis ID before starting analysis to prevent
+        // duplicates
+        String analysisId = generateAnalysisId(pod, failureTime);
+        boolean annotated = annotateAnalysisIdWithRetry(pod, analysisId, 0, 5, 100);
+        if (!annotated) {
+            log.warn(
+                    "Proceeding without analysis-id annotation for {} (id: {})",
+                    podKey,
+                    analysisId);
+        }
+
         for (Podmortem podmortem : podmortemResources) {
             eventService.emitFailureDetected(pod, podmortem);
             processPodFailureForPodmortem(podmortem, pod);
+        }
+    }
+
+    /**
+     * Generates a deterministic analysis ID based on pod UID and failure timestamp.
+     *
+     * <p>Uses name-based UUID so the same pod failure yields the same ID across restarts. Falls
+     * back to a random UUID if the failure time is unavailable.
+     */
+    private String generateAnalysisId(Pod pod, Instant failureTime) {
+        try {
+            String uid =
+                    pod.getMetadata().getUid() != null
+                            ? pod.getMetadata().getUid()
+                            : pod.getMetadata().getName();
+            String failureComponent = failureTime != null ? failureTime.toString() : "no-time";
+            String seed = uid + ":" + failureComponent;
+            return UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
+        } catch (Exception e) {
+            return UUID.randomUUID().toString();
+        }
+    }
+
+    /**
+     * Adds the analysis-id annotation to the pod with retry and backoff, if not already present.
+     */
+    private boolean annotateAnalysisIdWithRetry(
+            Pod pod, String analysisId, int attempt, int maxRetries, long delayMs) {
+        if (attempt > 0) {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        try {
+            Pod latest =
+                    client.pods()
+                            .inNamespace(pod.getMetadata().getNamespace())
+                            .withName(pod.getMetadata().getName())
+                            .get();
+            if (latest == null) {
+                return false;
+            }
+
+            Map<String, String> annotations = latest.getMetadata().getAnnotations();
+            if (annotations == null) {
+                annotations = new HashMap<>();
+            }
+
+            String key = ANALYSIS_ID_ANNOTATION;
+            if (annotations.containsKey(key)) {
+                return true;
+            }
+
+            annotations.put(key, analysisId);
+            latest.getMetadata().setAnnotations(annotations);
+            client.pods()
+                    .inNamespace(latest.getMetadata().getNamespace())
+                    .withName(latest.getMetadata().getName())
+                    .patch(latest);
+            return true;
+
+        } catch (io.fabric8.kubernetes.client.KubernetesClientException e) {
+            if (e.getCode() == 409 && attempt < maxRetries) {
+                return annotateAnalysisIdWithRetry(
+                        pod, analysisId, attempt + 1, maxRetries, delayMs * 2);
+            } else if (e.getCode() == 403) {
+                log.warn(
+                        "Forbidden to set analysis-id annotation for {} - check RBAC permissions: {}",
+                        pod.getMetadata().getName(),
+                        e.getMessage());
+                return false;
+            } else {
+                log.debug(
+                        "Failed to set analysis-id annotation (attempt {}): {}",
+                        attempt + 1,
+                        e.getMessage());
+                return false;
+            }
+        } catch (Exception e) {
+            log.debug("Unexpected error setting analysis-id annotation: {}", e.getMessage());
+            return false;
         }
     }
 
